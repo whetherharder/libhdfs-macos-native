@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v6
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v7
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -436,6 +436,7 @@ jobs:
             -Drequire.snappy=true \
             -Drequire.zstd=true \
             -Drequire.test.libhdfs=false \
+            -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
             2>&1 | tee build-common.log || true
 
           # If maven.compiler.skip breaks the build, use compile but skip surefire
@@ -462,6 +463,7 @@ jobs:
               -Drequire.snappy=true \
               -Drequire.zstd=true \
               -Drequire.test.libhdfs=false \
+              -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
               2>&1 | tee build-common.log
 
             if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -492,6 +494,7 @@ jobs:
             -Drequire.fuse=false \
             -Drequire.valgrind=false \
             -Drequire.test.libhdfs=false \
+            -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
             2>&1 | tee build-hdfs.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
