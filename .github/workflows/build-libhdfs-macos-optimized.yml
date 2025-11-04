@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v2
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v3
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -262,7 +262,18 @@ jobs:
           fi
           sed "${LINE_NUM}r ${PATCH_FILE}" "$CMAKE_FILE" > "${CMAKE_FILE}.patched"
           mv "${CMAKE_FILE}.patched" "$CMAKE_FILE"
-          echo "✅ CMake OpenSSL patch applied"
+          echo "✅ CMake OpenSSL patch applied to hadoop-common"
+
+          # Apply OpenSSL patch to hadoop-hdfs-native-client root CMakeLists.txt
+          HDFS_CMAKE_FILE="hadoop-hdfs-project/hadoop-hdfs-native-client/src/CMakeLists.txt"
+          if [ -f "$HDFS_CMAKE_FILE" ]; then
+            LINE_NUM=$(grep -n "cmake_minimum_required" "$HDFS_CMAKE_FILE" | head -1 | cut -d: -f1)
+            if [ -n "$LINE_NUM" ]; then
+              sed "${LINE_NUM}r ${PATCH_FILE}" "$HDFS_CMAKE_FILE" > "${HDFS_CMAKE_FILE}.patched"
+              mv "${HDFS_CMAKE_FILE}.patched" "$HDFS_CMAKE_FILE"
+              echo "✅ CMake OpenSSL patch applied to hadoop-hdfs-native-client"
+            fi
+          fi
 
           # Apply exception.c patch for macOS
           EXCEPTION_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-exception-macos.patch"
