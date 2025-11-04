@@ -1,0 +1,37 @@
+Hadoop libhdfs Build Information
+================================
+Hadoop Version: {{HADOOP_VERSION}}
+Build Date: {{BUILD_DATE}}
+Build Platform: macOS {{ARCH}} ({{ARCH_NAME}})
+Build Java: {{JAVA_BUILD_VERSION}}
+Runtime Java: {{JAVA_RUNTIME_VERSION}}
+Protocol Buffers: {{PROTOBUF_VERSION}}
+Build Type: Optimized (native only, pre-compiled JARs)
+GitHub Run: {{GITHUB_RUN}}
+
+Compression Support:
+- Snappy: Enabled
+- LZ4: Enabled
+- Zstd: Enabled
+- Zlib: Enabled (system default)
+
+Build Optimization:
+- Native libraries built from source
+- Java JARs downloaded from Maven Central (no Java compilation!)
+- Significantly faster build time
+
+Contents:
+- native/libhdfs.dylib - HDFS C API library
+- native/libhadoop.* - Hadoop native library
+- headers/*.h - C header files
+- jars/*.jar - Required Java JARs (pre-compiled from Maven Central)
+
+Usage:
+  export HADOOP_HOME=/path/to/libhdfs
+  export CLASSPATH=$(find $HADOOP_HOME/jars -name "*.jar" | tr '\n' ':')
+  export DYLD_LIBRARY_PATH=$HADOOP_HOME/native:$JAVA_HOME/lib/server
+
+  gcc your_app.c -I$HADOOP_HOME/headers \
+      -I$JAVA_HOME/include \
+      -I$JAVA_HOME/include/darwin \
+      -L$HADOOP_HOME/native -lhdfs

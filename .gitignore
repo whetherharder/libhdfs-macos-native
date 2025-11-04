@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+*.iml
+*.ipr
+*.iws
+.idea
+.vscode
+
+# Build artifacts
+target/
+build/
+*.o
+*.so
+*.dylib
+*.a
+
+# Maven
+dependency-reduced-pom.xml
+.mvn/.gradle-enterprise/
+.mvn/.develocity/
+
+# Hadoop build artifacts
+hadoop-src/
+libhdfs-artifacts/
+*.tar.gz
+*.sha256
+
+# Test outputs
+log.html
+output.xml
+report.html
+
+# Temporary files
+*.orig
+*.rej
+*.patch
+!.github/patches/*.patch
+*.tmp
+*.bak
+
+# Java
+*.class
+
+# Credentials and secrets
+auth-keys.xml
+*.pem
+*.key

@@ -1,0 +1,18 @@
+--- a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/crypto/random/OpensslSecureRandom.c
++++ b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/crypto/random/OpensslSecureRandom.c
+@@ -240,6 +240,7 @@
+ #endif /* WINDOWS */
+
+ #ifdef UNIX
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ static void pthreads_locking_callback(int mode, int type, char *file, int line);
+ static unsigned long pthreads_thread_id(void);
+ static pthread_mutex_t *lock_cs;
+@@ -301,6 +302,7 @@
+   return thread_id;
+ }
+
++#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+ #endif /* UNIX */
+
+ /**

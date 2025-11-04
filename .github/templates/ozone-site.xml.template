@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<configuration>
+  <property>
+    <name>ozone.om.address</name>
+    <value>localhost</value>
+  </property>
+  <property>
+    <name>ozone.scm.client.address</name>
+    <value>localhost</value>
+  </property>
+  <property>
+    <name>ozone.metadata.dirs</name>
+    <value>/tmp/ozone/metadata</value>
+  </property>
+  <property>
+    <name>ozone.scm.db.dirs</name>
+    <value>/tmp/ozone/scm</value>
+  </property>
+  <property>
+    <name>ozone.om.db.dirs</name>
+    <value>/tmp/ozone/om</value>
+  </property>
+  <property>
+    <name>ozone.scm.datanode.id.dir</name>
+    <value>/tmp/ozone/datanode</value>
+  </property>
+</configuration>
