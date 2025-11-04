@@ -115,7 +115,7 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-15
+            runner: macos-15-intel
             arch_name: x86_64
           - arch: apple-silicon-arm64
             runner: macos-15
@@ -686,7 +686,7 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-15
+            runner: macos-15-intel
             arch_name: x86_64
           - arch: apple-silicon-arm64
             runner: macos-15
@@ -762,7 +762,7 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-15
+            runner: macos-15-intel
             arch_name: x86_64
           - arch: apple-silicon-arm64
             runner: macos-15
