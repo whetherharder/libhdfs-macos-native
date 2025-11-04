@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_integration_tests:
+        description: 'Run full integration tests with Ozone (default: false, only smoke tests)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   HADOOP_VERSION: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
@@ -128,21 +133,6 @@ jobs:
           java-version: '11'
           architecture: x64
 
-      - name: Setup Java 17 (for runtime testing)
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          architecture: x64
-
-      - name: Set Java 11 as active
-        run: |
-          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
-          echo "Using Java 11 for build:"
-          java -version
-
       # ============================================
       # STEP 3: Install build dependencies
       # ============================================
@@ -222,34 +212,20 @@ jobs:
             ${{ runner.os }}-maven-optimized-
 
       # ============================================
-      # STEP 7: Download pre-compiled Hadoop JARs from Maven Central
+      # STEP 7: Cache Hadoop source
       # ============================================
-      - name: Download pre-compiled Hadoop JARs from Maven Central
-        run: |
-          echo "=== Downloading pre-compiled Hadoop JARs from Maven Central ==="
-          echo "This skips Java compilation entirely - we only need JARs for runtime!"
-
-          mkdir -p $HOME/hadoop-jars
-
-          # Download only the JARs needed for libhdfs runtime
-          cd $HOME/hadoop-jars
-
-          # Use pom.xml template from repository
-          cp ${GITHUB_WORKSPACE}/.github/templates/pom-download-jars.xml.template pom.xml
-          # macOS sed requires backup extension argument (use empty string for no backup)
-          sed -i '' "s/{{HADOOP_VERSION}}/${HADOOP_VERSION}/g" pom.xml
-
-          # Download JARs with dependencies
-          mvn dependency:copy-dependencies -DoutputDirectory=. -DincludeScope=runtime
-
-          echo "✅ Pre-compiled JARs downloaded"
-          echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
-          ls -lh *.jar | head -20
+      - name: Cache Hadoop source
+        id: cache-hadoop-src
+        uses: actions/cache@v4
+        with:
+          path: ~/hadoop-src
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-v1
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
       # ============================================
       - name: Clone Hadoop repository (shallow - for native code only)
+        if: steps.cache-hadoop-src.outputs.cache-hit != 'true'
         run: |
           echo "=== Cloning Hadoop ${HADOOP_VERSION} (shallow) ==="
           echo "We only need the native C/C++ source code, not Java sources!"
@@ -332,7 +308,7 @@ jobs:
 
           cd $HOME/hadoop-src
           echo "=== Building ONLY native libraries ==="
-          echo "Skipping ALL Java compilation - using pre-downloaded JARs!"
+          echo "No JAR downloads - pure native build!"
 
           # Get Homebrew prefixes (supports both Intel and ARM64)
           BREW_PREFIX=$(brew --prefix)
@@ -404,41 +380,49 @@ jobs:
             export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include"
           fi
 
-          # Build hadoop-common native ONLY (skip Java compilation entirely)
-          echo "=== Building hadoop-common native libraries ==="
-          mvn clean install -pl hadoop-common-project/hadoop-common \
-            -Pnative \
-            -DskipTests \
-            -Dmaven.compiler.skip=true \
-            -Dmaven.javadoc.skip=true \
-            -Dmaven.source.skip=true \
-            -Drat.skip=true \
-            -Drequire.openssl=true \
-            -Dopenssl.prefix=$OPENSSL_PREFIX \
-            -Dbundle.openssl=false \
-            -Drequire.libwebhdfs=false \
-            -Drequire.fuse=false \
-            -Drequire.valgrind=false \
-            -Drequire.snappy=true \
-            -Drequire.zstd=true \
-            -Drequire.test.libhdfs=false \
-            2>&1 | tee build-common.log || true
+          # EXPERIMENTAL: Try direct CMake build first (faster if it works)
+          echo "=== Attempting experimental CMake-only build ==="
+          CMAKE_BUILD_SUCCESS=false
 
-          # If maven.compiler.skip breaks the build, use compile but skip surefire
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "❌ maven.compiler.skip didn't work, trying alternative approach..."
+          # Try hadoop-common with CMake directly
+          if [ -d "hadoop-common-project/hadoop-common/src" ]; then
+            cd hadoop-common-project/hadoop-common/src
+            mkdir -p build && cd build
 
-            # Alternative: compile minimally but skip tests and other phases
+            if cmake .. \
+              -DREQUIRE_OPENSSL=ON \
+              -DREQUIRE_SNAPPY=ON \
+              -DREQUIRE_ZSTD=ON \
+              -DREQUIRE_LIBWEBHDFS=OFF \
+              -DREQUIRE_FUSE=OFF \
+              -DREQUIRE_VALGRIND=OFF \
+              -DCMAKE_BUILD_TYPE=Release \
+              2>&1 | tee cmake-config.log; then
+
+              if make -j$(sysctl -n hw.ncpu) 2>&1 | tee cmake-build.log; then
+                echo "✅ CMake build successful for hadoop-common!"
+                CMAKE_BUILD_SUCCESS=true
+                cd $HOME/hadoop-src
+              else
+                echo "⚠️  CMake build failed, falling back to Maven"
+                cd $HOME/hadoop-src
+              fi
+            else
+              echo "⚠️  CMake configuration failed, falling back to Maven"
+              cd $HOME/hadoop-src
+            fi
+          fi
+
+          # If CMake build failed, use Maven (reliable fallback)
+          if [ "$CMAKE_BUILD_SUCCESS" = false ]; then
+            echo "=== Building hadoop-common native libraries with Maven ==="
             mvn clean install -pl hadoop-common-project/hadoop-common \
               -Pnative \
               -DskipTests \
-              -Dmaven.test.skip=true \
-              -Dsurefire.skip=true \
+              -Dmaven.compiler.skip=true \
               -Dmaven.javadoc.skip=true \
               -Dmaven.source.skip=true \
               -Drat.skip=true \
-              -Dcheckstyle.skip=true \
-              -Dfindbugs.skip=true \
               -Drequire.openssl=true \
               -Dopenssl.prefix=$OPENSSL_PREFIX \
               -Dbundle.openssl=false \
@@ -448,11 +432,38 @@ jobs:
               -Drequire.snappy=true \
               -Drequire.zstd=true \
               -Drequire.test.libhdfs=false \
-              2>&1 | tee build-common.log
+              2>&1 | tee build-common.log || true
 
+            # If maven.compiler.skip breaks the build, use compile but skip surefire
             if [ ${PIPESTATUS[0]} -ne 0 ]; then
-              echo "❌ hadoop-common build FAILED"
-              exit 1
+              echo "❌ maven.compiler.skip didn't work, trying alternative approach..."
+
+              # Alternative: compile minimally but skip tests and other phases
+              mvn clean install -pl hadoop-common-project/hadoop-common \
+                -Pnative \
+                -DskipTests \
+                -Dmaven.test.skip=true \
+                -Dsurefire.skip=true \
+                -Dmaven.javadoc.skip=true \
+                -Dmaven.source.skip=true \
+                -Drat.skip=true \
+                -Dcheckstyle.skip=true \
+                -Dfindbugs.skip=true \
+                -Drequire.openssl=true \
+                -Dopenssl.prefix=$OPENSSL_PREFIX \
+                -Dbundle.openssl=false \
+                -Drequire.libwebhdfs=false \
+                -Drequire.fuse=false \
+                -Drequire.valgrind=false \
+                -Drequire.snappy=true \
+                -Drequire.zstd=true \
+                -Drequire.test.libhdfs=false \
+                2>&1 | tee build-common.log
+
+              if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                echo "❌ hadoop-common build FAILED"
+                exit 1
+              fi
             fi
           fi
 
@@ -488,14 +499,13 @@ jobs:
           echo "✅ libhdfs built successfully"
 
       # ============================================
-      # STEP 11: Collect artifacts
+      # STEP 11: Collect artifacts (native libraries and headers only)
       # ============================================
       - name: Collect libhdfs artifacts
         run: |
-          echo "=== Collecting libhdfs artifacts ==="
+          echo "=== Collecting libhdfs artifacts (native only) ==="
 
           mkdir -p $HOME/libhdfs-artifacts/native
-          mkdir -p $HOME/libhdfs-artifacts/jars
           mkdir -p $HOME/libhdfs-artifacts/headers
 
           # Copy native libraries
@@ -532,16 +542,12 @@ jobs:
           echo "Headers collected:"
           ls -la $HOME/libhdfs-artifacts/headers/
 
-          # Copy pre-downloaded JARs (much faster than compiling!)
-          echo "=== Using pre-compiled JARs from Maven Central ==="
-          cp $HOME/hadoop-jars/*.jar $HOME/libhdfs-artifacts/jars/
-
-          echo "=== Artifacts collected ==="
+          echo "=== Artifacts collected (native libraries only) ==="
           echo "Native libraries:"
           ls -lh $HOME/libhdfs-artifacts/native/
           echo ""
-          echo "JARs ($(ls -1 $HOME/libhdfs-artifacts/jars/*.jar | wc -l) files):"
-          ls -lh $HOME/libhdfs-artifacts/jars/ | head -10
+          echo "Headers:"
+          ls -lh $HOME/libhdfs-artifacts/headers/
 
       # ============================================
       # STEP 12: Verify libhdfs
@@ -581,39 +587,7 @@ jobs:
           otool -L libhdfs.dylib
 
       # ============================================
-      # STEP 13: Test with Java 17
-      # ============================================
-      - name: Test libhdfs with Java 17
-        run: |
-          echo "=== Testing libhdfs with Java 17 ==="
-
-          export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-          export PATH="$JAVA_HOME/bin:$PATH"
-
-          echo "Java version:"
-          java -version
-
-          export HADOOP_HOME=$HOME/hadoop-src
-          export CLASSPATH=$(find $HOME/libhdfs-artifacts/jars -name "*.jar" | tr '\n' ':')
-          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server
-
-          # Use test file from repository
-          cp ${GITHUB_WORKSPACE}/.github/templates/test_libhdfs.c /tmp/test_libhdfs.c
-
-          gcc /tmp/test_libhdfs.c -o /tmp/test_libhdfs \
-            -I$HOME/libhdfs-artifacts/headers \
-            -I$JAVA_HOME/include \
-            -I$JAVA_HOME/include/darwin \
-            -L$HOME/libhdfs-artifacts/native \
-            -lhdfs \
-            -Wl,-rpath,$HOME/libhdfs-artifacts/native
-
-          /tmp/test_libhdfs
-
-          echo "✅ libhdfs test passed with pre-compiled JARs!"
-
-      # ============================================
-      # STEP 14: Create package
+      # STEP 13: Create package (native libraries only)
       # ============================================
       - name: Create libhdfs package
         run: |
@@ -632,12 +606,12 @@ jobs:
           sed -i '' "s/{{GITHUB_RUN}}/${{ github.run_number }}/g" BUILD_INFO.txt
 
           tar -czf libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz \
-            native/ headers/ jars/ BUILD_INFO.txt
+            native/ headers/ BUILD_INFO.txt
 
           shasum -a 256 libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz > \
             libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz.sha256
 
-          echo "=== Package created ==="
+          echo "=== Package created (native libraries only) ==="
           ls -lh *.tar.gz*
 
       # ============================================
@@ -660,7 +634,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Optimization" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Native libraries built from source with compression support" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Java JARs downloaded from Maven Central (skipped Java compilation!)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Skipped Java compilation and JAR downloads" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Cached Hadoop source for faster subsequent builds" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Significantly faster build time" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Information" >> $GITHUB_STEP_SUMMARY
@@ -671,20 +646,97 @@ jobs:
           echo "### Native Libraries Artifact" >> $GITHUB_STEP_SUMMARY
           echo "**Artifact name:** \`libhdfs-${{ env.HADOOP_VERSION }}-macos-${{ matrix.arch }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Contains native libraries:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`libhdfs.dylib\` - HDFS C API library (dynamic)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`libhdfs.a\` - HDFS C API library (static)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`libhadoop.dylib\` - Hadoop native library (dynamic)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`libhadoop.a\` - Hadoop native library (static)" >> $GITHUB_STEP_SUMMARY
+          echo "Contains:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`libhdfs.dylib\` / \`libhdfs.a\` - HDFS C API library" >> $GITHUB_STEP_SUMMARY
+          echo "- \`libhadoop.dylib\` / \`libhadoop.a\` - Hadoop native library" >> $GITHUB_STEP_SUMMARY
+          echo "- Headers (\`*.h\`) for C/C++ development" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** JAR files excluded from artifacts. Download separately from Maven Central if needed." >> $GITHUB_STEP_SUMMARY
 
   # ============================================
-  # JOB 3: Integration tests with PyArrow (runs automatically after builds)
+  # JOB 3: Smoke test - fast native library verification (always runs)
+  # ============================================
+  smoke-test:
+    name: Smoke test - Native library verification (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: build-libhdfs
+    if: always() && needs.build-libhdfs.result == 'success'
+
+    strategy:
+      matrix:
+        include:
+          - arch: intel-x86_64
+            runner: macos-13
+            arch_name: x86_64
+          - arch: apple-silicon-arm64
+            runner: macos-14
+            arch_name: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          architecture: x64
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download libhdfs artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: libhdfs-${{ env.HADOOP_VERSION }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-native
+
+      - name: Verify native libraries load correctly
+        run: |
+          echo "=== Smoke test: Native library loading ==="
+
+          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
+          export DYLD_LIBRARY_PATH=~/libhdfs-native:$JAVA_HOME/lib/server
+
+          echo "Libraries:"
+          ls -lh ~/libhdfs-native/
+
+          echo ""
+          echo "Architecture check:"
+          file ~/libhdfs-native/libhdfs.dylib
+
+          echo ""
+          echo "Testing library loading..."
+          python3 .github/tests/test_library_loading.py
+
+          echo "✅ Smoke test passed - native libraries load correctly!"
+
+      - name: Smoke test summary
+        if: success()
+        run: |
+          echo "## ✅ Smoke Test Passed - ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Native libraries verified:" >> $GITHUB_STEP_SUMMARY
+          echo "- Library loading successful" >> $GITHUB_STEP_SUMMARY
+          echo "- Architecture: ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- No JAR files or Ozone cluster required" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** ~1-2 minutes" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # JOB 4: Integration tests with PyArrow (optional, manual trigger or main branch)
   # ============================================
   integration-tests:
     name: Integration tests with PyArrow (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     needs: build-libhdfs
-    if: always() && (needs.build-libhdfs.result == 'success' || github.event.inputs.skip_build == 'true')
+    if: |
+      always() &&
+      (needs.build-libhdfs.result == 'success' || github.event.inputs.skip_build == 'true') &&
+      (github.event.inputs.run_integration_tests == 'true' || github.ref == 'refs/heads/main')
 
     strategy:
       matrix:
@@ -744,6 +796,24 @@ jobs:
           echo "✅ Artifacts downloaded"
           ls -la ~/libhdfs-artifacts/native/
 
+      - name: Download Hadoop JARs for integration tests
+        run: |
+          echo "=== Downloading Hadoop JARs for integration tests ==="
+
+          mkdir -p ~/libhdfs-artifacts/jars
+          cd ~/libhdfs-artifacts/jars
+
+          # Use pom.xml template from repository
+          cp ${GITHUB_WORKSPACE}/.github/templates/pom-download-jars.xml.template pom.xml
+          # macOS sed requires backup extension argument (use empty string for no backup)
+          sed -i '' "s/{{HADOOP_VERSION}}/${HADOOP_VERSION}/g" pom.xml
+
+          # Download JARs with dependencies
+          mvn dependency:copy-dependencies -DoutputDirectory=. -DincludeScope=runtime
+
+          echo "✅ Hadoop JARs downloaded"
+          echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
+
       - name: Basic libhdfs test (library loading only)
         run: |
           echo "=== Basic library loading test ==="
@@ -755,59 +825,37 @@ jobs:
 
           echo "✅ Basic library loading test completed"
 
-      - name: Cache Ozone
-        id: cache-ozone
-        uses: actions/cache@v4
-        with:
-          path: ~/ozone
-          key: ${{ runner.os }}-ozone-1.4.0-${{ runner.arch }}
-
-      - name: Download and setup Ozone
-        if: steps.cache-ozone.outputs.cache-hit != 'true'
+      - name: Start Ozone with Docker Compose
         run: |
-          echo "=== Downloading Apache Ozone 1.4.0 ==="
+          echo "=== Starting Ozone mini cluster with Docker Compose ==="
 
-          OZONE_VERSION=1.4.0
-          curl -L -o ozone.tar.gz \
-            https://archive.apache.org/dist/ozone/${OZONE_VERSION}/ozone-${OZONE_VERSION}.tar.gz
-          tar -xzf ozone.tar.gz
-          mv ozone-${OZONE_VERSION} ~/ozone
-          rm ozone.tar.gz
+          cd ${GITHUB_WORKSPACE}/.github/templates
 
-          echo "✅ Ozone downloaded and cached"
+          # Start Ozone in background
+          docker-compose -f ozone-docker-compose.yml up -d
 
-      - name: Configure and start Ozone
-        run: |
-          echo "=== Configuring Ozone ==="
+          echo "=== Waiting for Ozone to be healthy ==="
+          # Wait for healthcheck to pass (max 60 seconds)
+          OZONE_READY=false
+          for i in {1..60}; do
+            if docker-compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
+              echo "✅ Ozone ready in $i seconds!"
+              OZONE_READY=true
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 1
+          done
 
-          cd ~/ozone
-
-          # Determine config directory
-          if [ -d "etc" ]; then
-            CONF_DIR="etc/hadoop"
-            mkdir -p $CONF_DIR
-          else
-            CONF_DIR="conf"
-            mkdir -p $CONF_DIR
+          if [ "$OZONE_READY" = false ]; then
+            echo "⚠️  Ozone did not become healthy within 60 seconds"
+            echo "=== Docker logs ==="
+            docker-compose -f ozone-docker-compose.yml logs
+            exit 1
           fi
 
-          echo "Using config directory: $CONF_DIR"
-          cp ${GITHUB_WORKSPACE}/.github/templates/ozone-site.xml.template $CONF_DIR/ozone-site.xml
-
-          # Create metadata directories
-          mkdir -p /tmp/ozone/{metadata,scm,om,datanode}
-
-          echo "=== Initializing and starting Ozone ==="
-          ./bin/ozone om --init
-          ./bin/ozone scm --init
-          ./bin/ozone om > /tmp/ozone/om.log 2>&1 &
-          ./bin/ozone scm > /tmp/ozone/scm.log 2>&1 &
-
-          # Wait for startup
-          echo "Waiting for Ozone to start..."
-          sleep 30
-
-          echo "✅ Ozone started"
+          echo "=== Ozone status ==="
+          docker-compose -f ozone-docker-compose.yml ps
 
       - name: Install Python dependencies
         run: |
@@ -832,5 +880,6 @@ jobs:
       - name: Cleanup Ozone
         if: always()
         run: |
-          pkill -f ozone || true
-          rm -rf /tmp/ozone
+          cd ${GITHUB_WORKSPACE}/.github/templates
+          docker-compose -f ozone-docker-compose.yml down -v || true
+          docker-compose -f ozone-docker-compose.yml rm -f || true

@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  ozone:
+    image: apache/ozone:1.4.0
+    container_name: ozone-test
+    hostname: ozone
+    ports:
+      - "9862:9862"  # Ozone DataNode
+      - "9878:9878"  # Ozone Manager
+      - "9876:9876"  # Storage Container Manager
+    environment:
+      - OZONE_OPTS=-Dorg.apache.ratis.thirdparty.io.netty.allocator.useCacheForAllThreads=false
+    command: ozone
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9878/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    networks:
+      - ozone-network
+
+networks:
+  ozone-network:
+    driver: bridge
