@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v5
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v6
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -359,6 +359,10 @@ jobs:
             ZLIB_PREFIX=$(xcrun --show-sdk-path 2>/dev/null || echo "/usr")
           fi
 
+          # Detect architecture for CMAKE_OSX_ARCHITECTURES
+          NATIVE_ARCH=$(uname -m)
+          echo "Native architecture: $NATIVE_ARCH"
+
           echo "Homebrew prefix: $BREW_PREFIX"
           echo "OpenSSL prefix: $OPENSSL_PREFIX"
           echo "Protobuf prefix: $PROTOBUF_PREFIX"
@@ -367,7 +371,10 @@ jobs:
           echo "Zstd prefix: $ZSTD_PREFIX"
           echo "Zlib prefix: $ZLIB_PREFIX"
 
-          # Setup environment
+          # Setup environment - CRITICAL: Set CMAKE_OSX_ARCHITECTURES to match native arch
+          export CMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH
+          echo "CMAKE_OSX_ARCHITECTURES set to: $CMAKE_OSX_ARCHITECTURES"
+
           export OPENSSL_ROOT_DIR=$OPENSSL_PREFIX
           export OPENSSL_INCLUDE_DIR=$OPENSSL_PREFIX/include
           export OPENSSL_LIBRARIES=$OPENSSL_PREFIX/lib
