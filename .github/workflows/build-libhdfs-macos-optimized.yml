@@ -34,7 +34,7 @@ jobs:
   # ============================================
   setup-maven:
     name: Setup Maven dependencies cache
-    runs-on: macos-13
+    runs-on: macos-15
     if: github.event.inputs.skip_build != 'true'
 
     steps:
@@ -115,10 +115,10 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-13
+            runner: macos-15
             arch_name: x86_64
           - arch: apple-silicon-arm64
-            runner: macos-14
+            runner: macos-15
             arch_name: arm64
 
     steps:
@@ -686,10 +686,10 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-13
+            runner: macos-15
             arch_name: x86_64
           - arch: apple-silicon-arm64
-            runner: macos-14
+            runner: macos-15
             arch_name: arm64
 
     steps:
@@ -762,10 +762,10 @@ jobs:
       matrix:
         include:
           - arch: intel-x86_64
-            runner: macos-13
+            runner: macos-15
             arch_name: x86_64
           - arch: apple-silicon-arm64
-            runner: macos-14
+            runner: macos-15
             arch_name: arm64
 
     steps:
