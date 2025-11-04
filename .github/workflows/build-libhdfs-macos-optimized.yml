@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v10
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v11
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
