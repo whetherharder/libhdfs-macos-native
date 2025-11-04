@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v12
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v13
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -300,27 +300,19 @@ jobs:
           patch --forward -p1 < "$OPENSSL_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ OpenSSL 3.x compatibility patch applied"
 
-          # Apply ARM64 patch to exclude x86-specific code (--forward makes it idempotent)
-          ARM64_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-exclude-x86.patch"
-          patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
-          echo "✅ ARM64 x86-exclusion patch applied"
-
-          # Debug: Show patched CRC32 architecture detection section
+          # Fix ARM64 architecture detection directly with sed (more reliable than patching)
           CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
-          echo "=== Showing patched CRC32 architecture detection section ==="
-          sed -n '155,162p' "$CMAKE_FILE"
+          echo "=== Fixing ARM64 architecture detection in CMakeLists.txt ==="
+          sed -i '' 's/elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")/elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")/' "$CMAKE_FILE"
 
-          # Inject diagnostic message using a simple approach
-          # Create a temp file with the diagnostic line inserted
-          awk 'NR==155{print; print "message(STATUS \"=== DIAGNOSTIC: CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR} ===\")"; next}1' "$CMAKE_FILE" > "$CMAKE_FILE.tmp"
-          mv "$CMAKE_FILE.tmp" "$CMAKE_FILE"
-
-          echo "=== After injecting diagnostic ==="
-          sed -n '155,163p' "$CMAKE_FILE"
-          echo "✅ Diagnostic message injected"
-
-          # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
-          # Injecting into CMakeLists.txt doesn't work because CMake creates cache before reading it
+          # Verify the fix
+          if grep -q 'CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64"' "$CMAKE_FILE"; then
+            echo "✅ ARM64 architecture detection fixed"
+            grep -A1 'CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64"' "$CMAKE_FILE"
+          else
+            echo "❌ ARM64 fix failed - line not found"
+            exit 1
+          fi
 
           # Fix cmake_minimum_required in ALL HDFS CMakeLists.txt files (including root)
           echo "=== Fixing CMake version in HDFS native client (all CMakeLists.txt) ==="
