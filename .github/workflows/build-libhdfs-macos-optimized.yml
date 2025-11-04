@@ -305,8 +305,19 @@ jobs:
           patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ ARM64 x86-exclusion patch applied"
 
-          # Debug: View CMAKE_SYSTEM_PROCESSOR value - will print during build
-          echo "Note: CMAKE_SYSTEM_PROCESSOR will be printed during Maven build via -X flag"
+          # Debug: Inject diagnostic message to print CMAKE_SYSTEM_PROCESSOR
+          CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
+          echo "=== Injecting CMAKE_SYSTEM_PROCESSOR diagnostic ==="
+
+          # Add diagnostic message right after the CRC32 architecture detection section
+          # Insert after line 155 (the comment about CRC32 acceleration)
+          sed -i.bak '155 a\
+message(STATUS "=== DIAGNOSTIC: CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR} ===")
+' "$CMAKE_FILE"
+
+          echo "=== Showing patched CRC32 architecture detection section ==="
+          sed -n '155,165p' "$CMAKE_FILE"
+          echo "✅ Diagnostic message injected"
 
           # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
           # Injecting into CMakeLists.txt doesn't work because CMake creates cache before reading it
