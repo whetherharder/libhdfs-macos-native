@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v8
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v9
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -299,6 +299,11 @@ jobs:
           OPENSSL_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-openssl3-compat.patch"
           patch --forward -p1 < "$OPENSSL_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ OpenSSL 3.x compatibility patch applied"
+
+          # Apply ARM64 patch to exclude x86-specific code (--forward makes it idempotent)
+          ARM64_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-exclude-x86.patch"
+          patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ ARM64 x86-exclusion patch applied"
 
           # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
           # Injecting into CMakeLists.txt doesn't work because CMake creates cache before reading it
