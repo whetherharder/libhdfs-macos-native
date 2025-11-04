@@ -2,6 +2,23 @@
 # Patch for macOS OpenSSL and ZLIB
 # Supports both Intel (/usr/local) and Apple Silicon (/opt/homebrew)
 if(APPLE)
+  # Detect and set target architecture explicitly
+  execute_process(
+    COMMAND uname -m
+    OUTPUT_VARIABLE NATIVE_ARCH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+
+  if(NATIVE_ARCH STREQUAL "arm64")
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Target architecture" FORCE)
+    message(STATUS "Building for Apple Silicon (arm64)")
+  elseif(NATIVE_ARCH STREQUAL "x86_64")
+    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Target architecture" FORCE)
+    message(STATUS "Building for Intel (x86_64)")
+  else()
+    message(WARNING "Unknown architecture: ${NATIVE_ARCH}, using default")
+  endif()
+
   # Fix OpenSSL paths - use environment variable set by workflow
   if(DEFINED ENV{OPENSSL_ROOT_DIR})
     set(OPENSSL_ROOT_DIR $ENV{OPENSSL_ROOT_DIR})
