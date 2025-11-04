@@ -290,14 +290,14 @@ jobs:
             fi
           fi
 
-          # Apply exception.c patch for macOS
+          # Apply exception.c patch for macOS (--forward makes it idempotent)
           EXCEPTION_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-exception-macos.patch"
-          patch -p1 < "$EXCEPTION_PATCH"
+          patch --forward -p1 < "$EXCEPTION_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ exception.c patch applied"
 
-          # Apply OpenSSL 3.x compatibility patch
+          # Apply OpenSSL 3.x compatibility patch (--forward makes it idempotent)
           OPENSSL_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-openssl3-compat.patch"
-          patch -p1 < "$OPENSSL_PATCH"
+          patch --forward -p1 < "$OPENSSL_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ OpenSSL 3.x compatibility patch applied"
 
           # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
