@@ -219,7 +219,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-v1
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v1
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -380,49 +380,41 @@ jobs:
             export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include"
           fi
 
-          # EXPERIMENTAL: Try direct CMake build first (faster if it works)
-          echo "=== Attempting experimental CMake-only build ==="
-          CMAKE_BUILD_SUCCESS=false
+          # Build hadoop-common native ONLY (skip Java compilation entirely)
+          echo "=== Building hadoop-common native libraries ==="
+          mvn clean install -pl hadoop-common-project/hadoop-common \
+            -Pnative \
+            -DskipTests \
+            -Dmaven.compiler.skip=true \
+            -Dmaven.javadoc.skip=true \
+            -Dmaven.source.skip=true \
+            -Drat.skip=true \
+            -Drequire.openssl=true \
+            -Dopenssl.prefix=$OPENSSL_PREFIX \
+            -Dbundle.openssl=false \
+            -Drequire.libwebhdfs=false \
+            -Drequire.fuse=false \
+            -Drequire.valgrind=false \
+            -Drequire.snappy=true \
+            -Drequire.zstd=true \
+            -Drequire.test.libhdfs=false \
+            2>&1 | tee build-common.log || true
 
-          # Try hadoop-common with CMake directly
-          if [ -d "hadoop-common-project/hadoop-common/src" ]; then
-            cd hadoop-common-project/hadoop-common/src
-            mkdir -p build && cd build
+          # If maven.compiler.skip breaks the build, use compile but skip surefire
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ maven.compiler.skip didn't work, trying alternative approach..."
 
-            if cmake .. \
-              -DREQUIRE_OPENSSL=ON \
-              -DREQUIRE_SNAPPY=ON \
-              -DREQUIRE_ZSTD=ON \
-              -DREQUIRE_LIBWEBHDFS=OFF \
-              -DREQUIRE_FUSE=OFF \
-              -DREQUIRE_VALGRIND=OFF \
-              -DCMAKE_BUILD_TYPE=Release \
-              2>&1 | tee cmake-config.log; then
-
-              if make -j$(sysctl -n hw.ncpu) 2>&1 | tee cmake-build.log; then
-                echo "✅ CMake build successful for hadoop-common!"
-                CMAKE_BUILD_SUCCESS=true
-                cd $HOME/hadoop-src
-              else
-                echo "⚠️  CMake build failed, falling back to Maven"
-                cd $HOME/hadoop-src
-              fi
-            else
-              echo "⚠️  CMake configuration failed, falling back to Maven"
-              cd $HOME/hadoop-src
-            fi
-          fi
-
-          # If CMake build failed, use Maven (reliable fallback)
-          if [ "$CMAKE_BUILD_SUCCESS" = false ]; then
-            echo "=== Building hadoop-common native libraries with Maven ==="
+            # Alternative: compile minimally but skip tests and other phases
             mvn clean install -pl hadoop-common-project/hadoop-common \
               -Pnative \
               -DskipTests \
-              -Dmaven.compiler.skip=true \
+              -Dmaven.test.skip=true \
+              -Dsurefire.skip=true \
               -Dmaven.javadoc.skip=true \
               -Dmaven.source.skip=true \
               -Drat.skip=true \
+              -Dcheckstyle.skip=true \
+              -Dfindbugs.skip=true \
               -Drequire.openssl=true \
               -Dopenssl.prefix=$OPENSSL_PREFIX \
               -Dbundle.openssl=false \
@@ -432,38 +424,11 @@ jobs:
               -Drequire.snappy=true \
               -Drequire.zstd=true \
               -Drequire.test.libhdfs=false \
-              2>&1 | tee build-common.log || true
+              2>&1 | tee build-common.log
 
-            # If maven.compiler.skip breaks the build, use compile but skip surefire
             if [ ${PIPESTATUS[0]} -ne 0 ]; then
-              echo "❌ maven.compiler.skip didn't work, trying alternative approach..."
-
-              # Alternative: compile minimally but skip tests and other phases
-              mvn clean install -pl hadoop-common-project/hadoop-common \
-                -Pnative \
-                -DskipTests \
-                -Dmaven.test.skip=true \
-                -Dsurefire.skip=true \
-                -Dmaven.javadoc.skip=true \
-                -Dmaven.source.skip=true \
-                -Drat.skip=true \
-                -Dcheckstyle.skip=true \
-                -Dfindbugs.skip=true \
-                -Drequire.openssl=true \
-                -Dopenssl.prefix=$OPENSSL_PREFIX \
-                -Dbundle.openssl=false \
-                -Drequire.libwebhdfs=false \
-                -Drequire.fuse=false \
-                -Drequire.valgrind=false \
-                -Drequire.snappy=true \
-                -Drequire.zstd=true \
-                -Drequire.test.libhdfs=false \
-                2>&1 | tee build-common.log
-
-              if [ ${PIPESTATUS[0]} -ne 0 ]; then
-                echo "❌ hadoop-common build FAILED"
-                exit 1
-              fi
+              echo "❌ hadoop-common build FAILED"
+              exit 1
             fi
           fi
 
