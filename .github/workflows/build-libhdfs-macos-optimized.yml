@@ -305,18 +305,18 @@ jobs:
           patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ ARM64 x86-exclusion patch applied"
 
-          # Debug: Inject diagnostic message to print CMAKE_SYSTEM_PROCESSOR
+          # Debug: Show patched CRC32 architecture detection section
           CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
-          echo "=== Injecting CMAKE_SYSTEM_PROCESSOR diagnostic ==="
-
-          # Add diagnostic message right after the CRC32 architecture detection section
-          # Insert after line 155 (the comment about CRC32 acceleration)
-          sed -i.bak '155 a\
-message(STATUS "=== DIAGNOSTIC: CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR} ===")
-' "$CMAKE_FILE"
-
           echo "=== Showing patched CRC32 architecture detection section ==="
-          sed -n '155,165p' "$CMAKE_FILE"
+          sed -n '155,162p' "$CMAKE_FILE"
+
+          # Inject diagnostic message using a simple approach
+          # Create a temp file with the diagnostic line inserted
+          awk 'NR==155{print; print "message(STATUS \"=== DIAGNOSTIC: CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR} ===\")"; next}1' "$CMAKE_FILE" > "$CMAKE_FILE.tmp"
+          mv "$CMAKE_FILE.tmp" "$CMAKE_FILE"
+
+          echo "=== After injecting diagnostic ==="
+          sed -n '155,163p' "$CMAKE_FILE"
           echo "✅ Diagnostic message injected"
 
           # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
