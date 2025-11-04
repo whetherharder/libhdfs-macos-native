@@ -300,20 +300,8 @@ jobs:
           patch -p1 < "$OPENSSL_PATCH"
           echo "✅ OpenSSL 3.x compatibility patch applied"
 
-          # CRITICAL: Inject CMAKE_OSX_ARCHITECTURES into ALL CMakeLists.txt BEFORE cmake_minimum_required
-          echo "=== Injecting CMAKE_OSX_ARCHITECTURES into all CMakeLists.txt ==="
-          ARCH_LINE="# AUTO-INJECTED: Set target architecture\nset(CMAKE_OSX_ARCHITECTURES \"$NATIVE_ARCH\" CACHE STRING \"Target architecture\" FORCE)\nmessage(STATUS \"CMAKE_OSX_ARCHITECTURES forced to: \${CMAKE_OSX_ARCHITECTURES}\")\n"
-
-          # Inject into hadoop-common CMakeLists.txt (AT THE VERY BEGINNING)
-          CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
-          echo -e "$ARCH_LINE$(cat $CMAKE_FILE)" > "$CMAKE_FILE"
-          echo "✅ Injected CMAKE_OSX_ARCHITECTURES into $CMAKE_FILE"
-
-          # Inject into ALL HDFS CMakeLists.txt files (AT THE VERY BEGINNING of each)
-          find hadoop-hdfs-project/hadoop-hdfs-native-client -name "CMakeLists.txt" | while read cmake_file; do
-            echo -e "$ARCH_LINE$(cat $cmake_file)" > "$cmake_file"
-            echo "✅ Injected CMAKE_OSX_ARCHITECTURES into $cmake_file"
-          done
+          # NOTE: CMAKE_OSX_ARCHITECTURES will be passed via -Dcmake.args during mvn build
+          # Injecting into CMakeLists.txt doesn't work because CMake creates cache before reading it
 
           # Fix cmake_minimum_required in ALL HDFS CMakeLists.txt files (including root)
           echo "=== Fixing CMake version in HDFS native client (all CMakeLists.txt) ==="
@@ -432,6 +420,12 @@ jobs:
             export LDFLAGS="-L$PROTOBUF_PREFIX/lib -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib"
             export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include"
           fi
+
+          # CRITICAL: Remove CMake cache to force reconfiguration with correct architecture
+          echo "=== Cleaning CMake cache to ensure correct architecture ==="
+          rm -rf hadoop-common-project/hadoop-common/target
+          rm -rf hadoop-hdfs-project/hadoop-hdfs-native-client/target
+          echo "✅ Cleaned CMake cache (target/ directories)"
 
           # Build hadoop-common native ONLY (skip Java compilation entirely)
           echo "=== Building hadoop-common native libraries ==="
