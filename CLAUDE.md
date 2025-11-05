@@ -33,14 +33,28 @@ Builds are automatically triggered on push to `main`, `develop`, or `claude/**` 
 
 Manual trigger via GitHub UI:
 ```
-Actions → "Build Hadoop libhdfs (Highly Optimized - Native Only)" → Run workflow
+Actions → "Build and Test libhdfs (Modular)" → Run workflow
 ```
 
 Or via GitHub CLI:
 ```bash
-gh workflow run build-libhdfs-macos-optimized.yml \
+# Full build (default)
+gh workflow run orchestrator.yml \
+  --field hadoop_version=3.3.6
+
+# Force build even if only tests changed
+gh workflow run orchestrator.yml \
+  --field force_build=true
+
+# Skip build, run tests only (use cached artifacts)
+gh workflow run orchestrator.yml \
+  --field skip_build=true \
+  --field run_integration_tests=true
+
+# Full build with integration tests
+gh workflow run orchestrator.yml \
   --field hadoop_version=3.3.6 \
-  --field skip_build=false
+  --field run_integration_tests=true
 ```
 
 ### Test Integration Locally
@@ -78,7 +92,13 @@ gcc .github/templates/test_libhdfs.c -o test_libhdfs \
 ```
 .github/
 ├── workflows/
-│   └── build-libhdfs-macos-optimized.yml  # Main build workflow (3 jobs)
+│   ├── orchestrator.yml                   # Main workflow - orchestrates all jobs
+│   ├── check-changes.yml                  # Reusable: Check if build needed + artifact validation
+│   ├── setup-maven.yml                    # Reusable: Setup Maven dependencies cache
+│   ├── build-libhdfs.yml                  # Reusable: Build native libraries (matrix: Intel + ARM64)
+│   ├── smoke-test.yml                     # Reusable: Fast native library verification (matrix)
+│   ├── integration-test.yml               # Reusable: PyArrow tests with Ozone (matrix + service containers)
+│   └── build-libhdfs-macos-optimized.yml.old  # Legacy monolithic workflow (backup)
 ├── patches/
 │   ├── hadoop-3.3.6-exception-macos.patch      # macOS exception.c patch
 │   ├── hadoop-3.3.6-macos-openssl.cmake        # OpenSSL path configuration
@@ -88,7 +108,7 @@ gcc .github/templates/test_libhdfs.c -o test_libhdfs \
 │   ├── test_libhdfs.c                     # C smoke test
 │   ├── BUILD_INFO.txt.template            # Build metadata template
 │   ├── ozone-site.xml.template            # Ozone configuration (legacy)
-│   └── ozone-docker-compose.yml           # Docker Compose for Ozone (used in integration tests)
+│   └── ozone-docker-compose.yml           # Docker Compose for Ozone (local dev reference)
 └── tests/
     ├── test_libhdfs_pyarrow.py            # PyArrow integration test
     ├── test_library_loading.py            # Basic library loading test
@@ -97,88 +117,116 @@ gcc .github/templates/test_libhdfs.c -o test_libhdfs \
 
 ## Workflow Architecture
 
-The main workflow (`.github/workflows/build-libhdfs-macos-optimized.yml`) has five jobs:
+The workflow system is **modular**, using reusable workflows for each stage. The main orchestrator (`.github/workflows/orchestrator.yml`) coordinates all jobs.
 
-### Job 0: `check-changes` **[NEW]**
+### Modular Structure
+
+**Main Orchestrator** (`orchestrator.yml`):
+- Entry point for all triggers (push, PR, manual)
+- Calls reusable workflows in dependency order
+- Passes inputs/outputs between jobs
+
+**Reusable Workflows** (called via `workflow_call`):
+
+### 1. `check-changes.yml` - Smart Build Decision
+**File**: `.github/workflows/check-changes.yml`
+
 - Runs on Ubuntu (fast startup)
-- Analyzes changed files to determine if build is needed
-- **Smart build detection**:
-  - If only test scripts or docs changed → skips build, uses latest artifacts
-  - If source code, patches, or workflows changed → triggers full build
-  - Manual triggers always respect `skip_build` parameter
-- **Files that don't require rebuild** (test scripts and docs only):
+- **Enhanced logic with artifact validation**:
+  - **Priority 0**: `force_build=true` → always build
+  - **Priority 1**: `skip_build=true` → skip build
+  - **Priority 2**: Manual trigger → always build
+  - **Priority 3**: Auto trigger → analyze changed files
+  - **Priority 4**: If skip recommended → **check artifact existence in latest run**
+    - If artifacts found for both architectures → skip build
+    - If artifacts missing/expired → force build
+
+- **Files that don't require rebuild**:
   - `.github/tests/*` (test scripts)
   - `.github/templates/ozone-docker-compose.yml` (test config)
   - `CLAUDE.md`, `README.md` (documentation)
+
 - **Files that ALWAYS trigger rebuild**:
-  - `.github/workflows/*` (workflow changes need fresh build)
+  - `.github/workflows/*` (workflow changes)
   - `.github/patches/*` (patch changes)
   - Source code files
+
 - **Output**: `should_build` (true/false)
 
-### Job 1: `setup-maven`
+### 2. `setup-maven.yml` - Maven Dependencies Cache
+**File**: `.github/workflows/setup-maven.yml`
+
 - Runs once on Intel runner (macos-15)
 - Downloads Maven dependencies and plugins
 - Creates Maven cache for subsequent jobs
 - Only runs if `should_build == true`
 
-### Job 2: `build-libhdfs` (matrix: Intel & ARM64)
+### 3. `build-libhdfs.yml` - Native Library Compilation
+**File**: `.github/workflows/build-libhdfs.yml`
+
+- **Matrix strategy**: Intel x86_64 + ARM64 (parallel)
 - Depends on `check-changes` and `setup-maven`
-- Runs in parallel for both architectures
 - Only runs if `should_build == true`
 - **Key steps**:
   1. Setup Java 11 (build only)
   2. Install Homebrew dependencies: cmake, maven, protobuf@21, openssl@3, snappy, lz4, zstd, zlib
   3. Setup OpenSSL symlinks (keg-only formula)
-  4. **Cache Hadoop source** (keyed by version)
-  5. Clone Hadoop source only if cache miss (shallow, specific release tag)
-  6. Apply macOS patches (see Patches section below)
-  7. **Experimental CMake build** attempt (falls back to Maven if fails)
-  8. Build native libraries only (Maven with `-Pnative -DskipTests -Dmaven.compiler.skip=true`)
-  9. Collect artifacts (native libraries and headers only, **no JARs**)
-  10. Package and upload artifacts
+  4. Cache Hadoop source (keyed by version)
+  5. Clone Hadoop source only if cache miss (shallow)
+  6. Apply macOS patches (see Patches section)
+  7. Build native libraries only (Maven with `-Pnative -DskipTests -Dmaven.compiler.skip=true`)
+  8. Collect artifacts (native libraries + headers, **no JARs**)
+  9. Upload artifacts
 
-**Note:** JAR downloads completely removed from this job to save time.
+**Note:** JAR downloads completely removed from build to save time.
 
-### Job 3: `smoke-test` (matrix: Intel & ARM64)
-- Runs after `check-changes` and `build-libhdfs`
-- **Always runs** on all branches (fast feedback loop)
+### 4. `smoke-test.yml` - Fast Native Library Verification
+**File**: `.github/workflows/smoke-test.yml`
+
+- **Matrix strategy**: Intel x86_64 + ARM64 (parallel)
+- **Always runs** (fast feedback loop)
 - **Smart artifact download**:
   - If `should_build == true` → downloads from current run
   - If `should_build == false` → downloads from latest successful run
 - **Key steps**:
-  1. Download libhdfs artifacts (current or latest)
-  2. Verify native libraries load correctly using `test_library_loading.py`
-  3. No JAR files needed, no Ozone cluster needed
+  1. Download libhdfs artifacts
+  2. Verify native libraries load correctly (`test_library_loading.py`)
+  3. No JAR files or Ozone cluster needed
 - **Time**: ~1-2 minutes per architecture
 - **Purpose**: Catch 80% of build issues quickly
 
-### Job 4: `integration-tests` (matrix: Intel & ARM64)
-- Runs after `check-changes` and `build-libhdfs`
+### 5. `integration-test.yml` - PyArrow Tests with Ozone
+**File**: `.github/workflows/integration-test.yml`
+
+- **Matrix strategy**: Intel x86_64 + ARM64 (parallel)
+- **Docker Compose**: Ozone cluster via Docker Compose v2
+  - Each matrix job gets own Ozone instance (runner isolation)
+  - Health check polling (60s timeout)
+  - Automatic cleanup with `docker compose down`
 - **Only runs when**:
-  - Manual trigger with `run_integration_tests = true`, OR
+  - Manual trigger with `run_integration_tests=true`, OR
   - Push to `main` branch
-- **Smart artifact download**:
-  - If `should_build == true` → downloads from current run
-  - If `should_build == false` → downloads from latest successful run
+- **Enhanced artifact download**:
+  - Retry logic (3 attempts, 300s timeout each)
+  - Artifact validation (check libhdfs.dylib exists)
+  - Clear error messages for expired/missing artifacts
 - **Key steps**:
-  1. Download libhdfs artifacts (current or latest)
-  2. **Download Hadoop JARs** for integration tests (only here!)
+  1. Download libhdfs artifacts (with retry)
+  2. Download Hadoop JARs for integration tests
   3. Run basic library loading test
-  4. **Start Ozone with Docker Compose** (`.github/templates/ozone-docker-compose.yml`)
-  5. Wait for Ozone health check to pass
+  4. Start Ozone with Docker Compose
+  5. Wait for Ozone health check (polling)
   6. Run PyArrow integration tests with compression
   7. Cleanup: docker compose down
 - **Time**: ~5-10 minutes per architecture
 
-**Key optimizations**:
-- **Smart build detection**: Automatically skips rebuild when only tests/docs changed (~15 min → ~2-3 min)
-- **Ozone via Docker Compose v2**: Uses `docker compose` (not `docker-compose`) for compatibility with latest GitHub Actions runners
-- Built-in health checks ensure Ozone is ready before tests
-- JAR files only downloaded when integration tests actually run
-- Integration tests skipped on feature branches by default
-- No need to cache Ozone tarball anymore
-- Artifact reuse from previous successful runs when build is skipped
+### Key Improvements in Modular Architecture
+
+1. **Modular code**: Each workflow file focused on single responsibility
+2. **Artifact validation**: Checks existence before skipping build
+3. **Docker Compose v2**: Ozone cluster management with health checks
+4. **Enhanced error handling**: Retry logic and clear failure messages
+5. **Better maintainability**: Changes isolated to specific workflow files
 
 ## Patches
 
@@ -242,8 +290,21 @@ Minimal test that verifies library can be loaded without HDFS cluster.
 When triggering manually via `workflow_dispatch`:
 
 - `hadoop_version` (default: `3.3.6`): Hadoop version to build
-- `skip_build` (default: `false`): Skip build and run only integration tests using latest artifacts
-- `run_integration_tests` (default: `false`): Run full integration tests with Ozone cluster. If false, only smoke tests run (much faster)
+- `force_build` (default: `false`): **NEW** - Force full build even if only tests/docs changed. Overrides smart build detection.
+- `skip_build` (default: `false`): Skip build and run only tests using latest artifacts. Useful for testing changes.
+- `run_integration_tests` (default: `false`): Run full integration tests with Ozone cluster. If false, only smoke tests run (much faster).
+
+### Build Decision Priority
+
+The `check-changes` workflow uses the following priority order:
+
+1. **Priority 0**: `force_build=true` → Always build (overrides everything)
+2. **Priority 1**: `skip_build=true` → Skip build (use cached artifacts)
+3. **Priority 2**: Manual trigger (workflow_dispatch) → Always build
+4. **Priority 3**: Auto trigger (push/PR) → Analyze changed files
+5. **Priority 4**: If only test/docs changed → Check artifact existence:
+   - Artifacts found → Skip build
+   - Artifacts missing/expired → Force build
 
 ## Build Artifacts
 
@@ -359,3 +420,4 @@ Claude-specific branches (`claude/**`) are included to allow experimental builds
   4. больше никак
 - всегда используй агент после пуша
 - всегда используй агент чтобы мониторить билд
+- перед пушем делай ревью. для этого используй агент

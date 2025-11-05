@@ -1,0 +1,601 @@
+name: Build libhdfs native libraries
+
+on:
+  workflow_call:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version to build'
+        type: string
+        required: true
+      protobuf_version:
+        description: 'Protocol Buffers version'
+        type: string
+        required: true
+      java_build_version:
+        description: 'Java version for build'
+        type: string
+        required: true
+      java_runtime_version:
+        description: 'Java version for runtime/tests'
+        type: string
+        required: true
+
+jobs:
+  build:
+    name: Build libhdfs (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          - arch: intel-x86_64
+            runner: macos-15-intel
+            arch_name: x86_64
+          - arch: apple-silicon-arm64
+            runner: macos-15
+            arch_name: arm64
+
+    steps:
+      # ============================================
+      # STEP 1: Checkout repository
+      # ============================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================
+      # STEP 2: Setup Java (minimal - only for native build)
+      # ============================================
+      - name: Setup Java ${{ inputs.java_build_version}} (for native compilation only)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java_build_version }}
+          architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
+
+      # ============================================
+      # STEP 3: Install build dependencies
+      # ============================================
+      - name: Install build tools and libraries
+        run: |
+          echo "=== Installing build dependencies ==="
+          brew install maven cmake autoconf automake libtool
+          brew install openssl@3 snappy zlib lz4 zstd protobuf@21
+
+      # ============================================
+      # STEP 4: Verify Protocol Buffers installation
+      # ============================================
+      - name: Verify Protocol Buffers installation
+        run: |
+          echo "=== Verifying Protocol Buffers from brew ==="
+          # protobuf@21 is keg-only, need to add to PATH
+          # Use brew --prefix to support both Intel (/usr/local) and ARM64 (/opt/homebrew)
+          PROTOBUF_PREFIX=$(brew --prefix protobuf@21)
+          export PATH="$PROTOBUF_PREFIX/bin:$PATH"
+          protoc --version
+          echo "Protobuf libraries:"
+          ls -la "$PROTOBUF_PREFIX/lib/" | grep libprotobuf
+          echo "✅ Protocol Buffers installed via brew at $PROTOBUF_PREFIX"
+
+          # Add to PATH for subsequent steps
+          echo "$PROTOBUF_PREFIX/bin" >> $GITHUB_PATH
+
+      # ============================================
+      # STEP 5: Setup OpenSSL
+      # ============================================
+      - name: Setup OpenSSL symlinks
+        run: |
+          # Get Homebrew prefix (supports both Intel and ARM64)
+          BREW_PREFIX=$(brew --prefix)
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+
+          echo "Homebrew prefix: $BREW_PREFIX"
+          echo "OpenSSL prefix: $OPENSSL_PREFIX"
+
+          # Verify OpenSSL installation
+          echo "=== Verifying OpenSSL installation ==="
+          ls -la "$OPENSSL_PREFIX/include/" | head -10
+          ls -la "$OPENSSL_PREFIX/lib/" | grep -E 'libssl|libcrypto'
+
+          # Create symlinks for headers
+          if [ ! -e "$BREW_PREFIX/include/openssl" ]; then
+            cd "$BREW_PREFIX/include"
+            sudo ln -sf "$OPENSSL_PREFIX/include/openssl" . || true
+            echo "✅ Created header symlink: $BREW_PREFIX/include/openssl -> $OPENSSL_PREFIX/include/openssl"
+          else
+            echo "✅ Header symlink already exists: $BREW_PREFIX/include/openssl"
+          fi
+
+          # Create symlinks for libraries
+          if [ ! -e "$BREW_PREFIX/lib/libssl.dylib" ]; then
+            cd "$BREW_PREFIX/lib"
+            sudo ln -sf "$OPENSSL_PREFIX/lib/libssl.3.dylib" libssl.dylib || true
+            sudo ln -sf "$OPENSSL_PREFIX/lib/libcrypto.3.dylib" libcrypto.dylib || true
+            echo "✅ Created library symlinks in $BREW_PREFIX/lib"
+          else
+            echo "✅ Library symlinks already exist"
+          fi
+
+      # ============================================
+      # STEP 6: Restore Maven cache (prepared by setup-maven job)
+      # ============================================
+      - name: Restore Maven dependencies cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-optimized-hadoop-${{ inputs.hadoop_version }}-v4
+          restore-keys: |
+            ${{ runner.os }}-maven-optimized-hadoop-${{ inputs.hadoop_version }}-
+            ${{ runner.os }}-maven-optimized-hadoop-
+            ${{ runner.os }}-maven-optimized-
+
+      # ============================================
+      # STEP 7: Cache Hadoop source
+      # ============================================
+      - name: Cache Hadoop source
+        id: cache-hadoop-src
+        uses: actions/cache@v4
+        with:
+          path: ~/hadoop-src
+          key: hadoop-src-${{ inputs.hadoop_version }}-${{ matrix.arch }}-v20
+
+      # ============================================
+      # STEP 8: Clone Hadoop source (for native code only)
+      # ============================================
+      - name: Clone Hadoop repository (shallow - for native code only)
+        if: steps.cache-hadoop-src.outputs.cache-hit != 'true'
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+        run: |
+          echo "=== Cloning Hadoop ${HADOOP_VERSION} (shallow) ==="
+          echo "We only need the native C/C++ source code, not Java sources!"
+
+          git clone --depth 1 --branch rel/release-${HADOOP_VERSION} \
+            --single-branch \
+            https://github.com/apache/hadoop.git $HOME/hadoop-src
+
+          cd $HOME/hadoop-src
+          echo "Hadoop version: $(grep '<version>' pom.xml | head -1)"
+
+      # ============================================
+      # STEP 9: Apply patches
+      # ============================================
+      - name: Apply macOS compatibility patches
+        run: |
+          cd $HOME/hadoop-src
+
+          # Fix cmake_minimum_required in hadoop-common
+          CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
+          sed -i.bak 's/cmake_minimum_required(VERSION 3.1/cmake_minimum_required(VERSION 3.5/' "$CMAKE_FILE"
+          echo "✅ Updated cmake_minimum_required to VERSION 3.5"
+
+          # Apply OpenSSL patch
+          PATCH_FILE="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-macos-openssl.cmake"
+          LINE_NUM=$(grep -n "include(HadoopJNI)" "$CMAKE_FILE" | head -1 | cut -d: -f1)
+          if [ -z "$LINE_NUM" ]; then
+            LINE_NUM=$(grep -n "cmake_minimum_required" "$CMAKE_FILE" | head -1 | cut -d: -f1)
+          fi
+          sed "${LINE_NUM}r ${PATCH_FILE}" "$CMAKE_FILE" > "${CMAKE_FILE}.patched"
+          mv "${CMAKE_FILE}.patched" "$CMAKE_FILE"
+          echo "✅ CMake OpenSSL patch applied to hadoop-common"
+
+          # Apply OpenSSL patch to hadoop-hdfs-native-client root CMakeLists.txt
+          # IMPORTANT: Must inject BEFORE project() command for CMAKE_OSX_ARCHITECTURES to take effect
+          HDFS_CMAKE_FILE="hadoop-hdfs-project/hadoop-hdfs-native-client/src/CMakeLists.txt"
+          if [ -f "$HDFS_CMAKE_FILE" ]; then
+            # Find the line number of project( command (match anywhere in line, with optional whitespace)
+            LINE_NUM=$(grep -n "project(" "$HDFS_CMAKE_FILE" | head -1 | cut -d: -f1)
+            if [ -n "$LINE_NUM" ]; then
+              # Insert patch BEFORE project() line (LINE_NUM - 1 means insert after the previous line)
+              ((LINE_NUM--))
+              sed "${LINE_NUM}r ${PATCH_FILE}" "$HDFS_CMAKE_FILE" > "${HDFS_CMAKE_FILE}.patched"
+              mv "${HDFS_CMAKE_FILE}.patched" "$HDFS_CMAKE_FILE"
+              echo "✅ CMake OpenSSL patch applied to hadoop-hdfs-native-client (before project() at line $LINE_NUM)"
+            else
+              # If no project() found, insert after cmake_minimum_required as fallback
+              echo "⚠️  No project() found, trying cmake_minimum_required"
+              LINE_NUM=$(grep -n "cmake_minimum_required" "$HDFS_CMAKE_FILE" | head -1 | cut -d: -f1)
+              if [ -n "$LINE_NUM" ]; then
+                sed "${LINE_NUM}r ${PATCH_FILE}" "$HDFS_CMAKE_FILE" > "${HDFS_CMAKE_FILE}.patched"
+                mv "${HDFS_CMAKE_FILE}.patched" "$HDFS_CMAKE_FILE"
+                echo "✅ CMake OpenSSL patch applied to hadoop-hdfs-native-client (after cmake_minimum_required)"
+              else
+                echo "❌ Error: Could not find insertion point in $HDFS_CMAKE_FILE"
+              fi
+            fi
+          fi
+
+          # Apply exception.c patch for macOS (--forward makes it idempotent)
+          EXCEPTION_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-exception-macos.patch"
+          patch --forward -p1 < "$EXCEPTION_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ exception.c patch applied"
+
+          # Apply OpenSSL 3.x compatibility patch (--forward makes it idempotent)
+          OPENSSL_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-openssl3-compat.patch"
+          patch --forward -p1 < "$OPENSSL_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ OpenSSL 3.x compatibility patch applied"
+
+          # Apply ARM64 CRC32 priority patch (checks CMAKE_OSX_ARCHITECTURES FIRST)
+          ARM64_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-crc32-priority.patch"
+          patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ ARM64 CRC32 priority patch applied"
+
+          # Apply ARM64 macOS auxv patch (fixes sys/auxv.h not found on macOS)
+          ARM64_AUXV_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-macos-auxv.patch"
+          patch --forward -p1 < "$ARM64_AUXV_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ ARM64 macOS auxv patch applied"
+
+          # Fix cmake_minimum_required in ALL HDFS CMakeLists.txt files (including root)
+          echo "=== Fixing CMake version in HDFS native client (all CMakeLists.txt) ==="
+
+          # Find all CMakeLists.txt files and update cmake_minimum_required to 3.5
+          find hadoop-hdfs-project/hadoop-hdfs-native-client -name "CMakeLists.txt" | \
+          while read -r cmake_file; do
+            if grep -q "cmake_minimum_required" "$cmake_file"; then
+              echo "Updating $cmake_file"
+              # Show before
+              echo "  Before: $(grep cmake_minimum_required "$cmake_file" | head -1)"
+              # Replace any cmake_minimum_required with VERSION < 3.5
+              # Use -E for extended regex on macOS (+ instead of \+)
+              sed -i.bak -E 's/cmake_minimum_required\(VERSION [0-9]+\.[0-9]+/cmake_minimum_required(VERSION 3.5/' "$cmake_file"
+              # Show after
+              echo "  After:  $(grep cmake_minimum_required "$cmake_file" | head -1)"
+              # Verify change
+              if ! grep -q "cmake_minimum_required(VERSION 3.5" "$cmake_file"; then
+                echo "  ⚠️  WARNING: Failed to update $cmake_file"
+                # Try to show what went wrong
+                echo "  Content: $(cat "$cmake_file" | grep -A2 -B2 cmake_minimum_required)"
+              fi
+            fi
+          done
+
+          echo "=== Verifying all cmake_minimum_required updates ==="
+          find hadoop-hdfs-project/hadoop-hdfs-native-client -name "CMakeLists.txt" -exec grep -H "cmake_minimum_required" {} \;
+
+          echo "✅ Updated all HDFS cmake_minimum_required to VERSION 3.5"
+
+      # ============================================
+      # STEP 10: Build ONLY native libraries (NO Java compilation!)
+      # ============================================
+      - name: Build native libraries only (skip all Java compilation)
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+        run: |
+          set -e
+          set -o pipefail
+
+          cd $HOME/hadoop-src
+          echo "=== Building ONLY native libraries ==="
+          echo "No JAR downloads - pure native build!"
+
+          # Get Homebrew prefixes (supports both Intel and ARM64)
+          BREW_PREFIX=$(brew --prefix)
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          PROTOBUF_PREFIX=$(brew --prefix protobuf@21)
+
+          # Compression libraries - use Homebrew for all
+          SNAPPY_PREFIX=$(brew --prefix snappy 2>/dev/null || echo "$BREW_PREFIX")
+          LZ4_PREFIX=$(brew --prefix lz4 2>/dev/null || echo "$BREW_PREFIX")
+          ZSTD_PREFIX=$(brew --prefix zstd 2>/dev/null || echo "$BREW_PREFIX")
+
+          # ZLIB - always use Homebrew version for consistent paths
+          ZLIB_PREFIX=$(brew --prefix zlib 2>/dev/null || echo "")
+          if [ -z "$ZLIB_PREFIX" ]; then
+            echo "⚠️  zlib not found in Homebrew, using system zlib may cause issues"
+            # Try to use system zlib via Xcode SDK paths
+            ZLIB_PREFIX=$(xcrun --show-sdk-path 2>/dev/null || echo "/usr")
+          fi
+
+          # Detect architecture for CMAKE_OSX_ARCHITECTURES
+          NATIVE_ARCH=$(uname -m)
+          echo "Native architecture: $NATIVE_ARCH"
+
+          echo "Homebrew prefix: $BREW_PREFIX"
+          echo "OpenSSL prefix: $OPENSSL_PREFIX"
+          echo "Protobuf prefix: $PROTOBUF_PREFIX"
+          echo "Snappy prefix: $SNAPPY_PREFIX"
+          echo "LZ4 prefix: $LZ4_PREFIX"
+          echo "Zstd prefix: $ZSTD_PREFIX"
+          echo "Zlib prefix: $ZLIB_PREFIX"
+
+          # Setup environment - CRITICAL: Set CMAKE_OSX_ARCHITECTURES to match native arch
+          export CMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH
+          echo "CMAKE_OSX_ARCHITECTURES set to: $CMAKE_OSX_ARCHITECTURES"
+
+          export OPENSSL_ROOT_DIR=$OPENSSL_PREFIX
+          export OPENSSL_INCLUDE_DIR=$OPENSSL_PREFIX/include
+          export OPENSSL_LIBRARIES=$OPENSSL_PREFIX/lib
+
+          # ZLIB configuration for CMake - use actual Homebrew paths
+          if [[ "$ZLIB_PREFIX" == *"/opt/homebrew"* ]] || [[ "$ZLIB_PREFIX" == *"/usr/local"* ]]; then
+            # Homebrew zlib
+            export ZLIB_ROOT=$ZLIB_PREFIX
+            export ZLIB_INCLUDE_DIR=$ZLIB_PREFIX/include
+            export ZLIB_LIBRARY=$ZLIB_PREFIX/lib/libz.dylib
+            echo "Using Homebrew zlib:"
+            echo "  ZLIB_ROOT=$ZLIB_ROOT"
+            echo "  ZLIB_INCLUDE_DIR=$ZLIB_INCLUDE_DIR"
+            echo "  ZLIB_LIBRARY=$ZLIB_LIBRARY"
+            ls -la "$ZLIB_LIBRARY" 2>/dev/null || echo "  ⚠️  ZLIB_LIBRARY not found!"
+          else
+            # System zlib via SDK
+            export ZLIB_ROOT=$ZLIB_PREFIX
+            export ZLIB_INCLUDE_DIR=$ZLIB_PREFIX/usr/include
+            echo "Using system zlib via SDK:"
+            echo "  ZLIB_ROOT=$ZLIB_ROOT"
+            echo "  ZLIB_INCLUDE_DIR=$ZLIB_INCLUDE_DIR"
+            echo "  Note: ZLIB_LIBRARY will be auto-detected by CMake"
+          fi
+
+          # Add all compression libraries to PKG_CONFIG_PATH
+          export PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig:$PROTOBUF_PREFIX/lib/pkgconfig:$SNAPPY_PREFIX/lib/pkgconfig:$LZ4_PREFIX/lib/pkgconfig:$ZSTD_PREFIX/lib/pkgconfig
+
+          export PROTOBUF_HOME=$PROTOBUF_PREFIX
+          export CMAKE_PREFIX_PATH=$OPENSSL_PREFIX:$PROTOBUF_PREFIX:$SNAPPY_PREFIX:$LZ4_PREFIX:$ZSTD_PREFIX:$ZLIB_PREFIX:$BREW_PREFIX
+          export Protobuf_ROOT=$PROTOBUF_PREFIX
+
+          # Compiler flags for all keg-only libraries
+          if [[ "$ZLIB_PREFIX" == *"/opt/homebrew"* ]] || [[ "$ZLIB_PREFIX" == *"/usr/local"* ]]; then
+            # Include Homebrew zlib in flags
+            export LDFLAGS="-L$PROTOBUF_PREFIX/lib -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib -L$ZLIB_PREFIX/lib"
+            export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include -I$ZLIB_PREFIX/include"
+          else
+            # System zlib, don't add to flags (CMake will find it)
+            export LDFLAGS="-L$PROTOBUF_PREFIX/lib -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib"
+            export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include"
+          fi
+
+          # CRITICAL: Remove CMake cache to force reconfiguration with correct architecture
+          echo "=== Cleaning CMake cache to ensure correct architecture ==="
+          rm -rf hadoop-common-project/hadoop-common/target
+          rm -rf hadoop-hdfs-project/hadoop-hdfs-native-client/target
+          echo "✅ Cleaned CMake cache (target/ directories)"
+
+          # Build hadoop-common native ONLY (skip Java compilation entirely)
+          echo "=== Building hadoop-common native libraries ==="
+          mvn clean install -pl hadoop-common-project/hadoop-common \
+            -Pnative \
+            -DskipTests \
+            -Dmaven.compiler.skip=true \
+            -Dmaven.javadoc.skip=true \
+            -Dmaven.source.skip=true \
+            -Drat.skip=true \
+            -Drequire.openssl=true \
+            -Dopenssl.prefix=$OPENSSL_PREFIX \
+            -Dbundle.openssl=false \
+            -Drequire.libwebhdfs=false \
+            -Drequire.fuse=false \
+            -Drequire.valgrind=false \
+            -Drequire.snappy=true \
+            -Drequire.zstd=true \
+            -Drequire.test.libhdfs=false \
+            -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
+            2>&1 | tee build-common.log || true
+
+          # If maven.compiler.skip breaks the build, use compile but skip surefire
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ maven.compiler.skip didn't work, trying alternative approach..."
+
+            # Alternative: compile minimally but skip tests and other phases
+            mvn clean install -pl hadoop-common-project/hadoop-common \
+              -Pnative \
+              -DskipTests \
+              -Dmaven.test.skip=true \
+              -Dsurefire.skip=true \
+              -Dmaven.javadoc.skip=true \
+              -Dmaven.source.skip=true \
+              -Drat.skip=true \
+              -Dcheckstyle.skip=true \
+              -Dfindbugs.skip=true \
+              -Drequire.openssl=true \
+              -Dopenssl.prefix=$OPENSSL_PREFIX \
+              -Dbundle.openssl=false \
+              -Drequire.libwebhdfs=false \
+              -Drequire.fuse=false \
+              -Drequire.valgrind=false \
+              -Drequire.snappy=true \
+              -Drequire.zstd=true \
+              -Drequire.test.libhdfs=false \
+              -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
+              2>&1 | tee build-common.log
+
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo "❌ hadoop-common build FAILED"
+              exit 1
+            fi
+          fi
+
+          echo "✅ hadoop-common native built successfully"
+
+          # Build HDFS native client (libhdfs)
+          echo "=== Building hadoop-hdfs native libraries ==="
+          mvn install -pl hadoop-hdfs-project/hadoop-hdfs-native-client \
+            -am \
+            -Pnative \
+            -DskipTests \
+            -Dmaven.test.skip=true \
+            -Dsurefire.skip=true \
+            -Dmaven.javadoc.skip=true \
+            -Dmaven.source.skip=true \
+            -Drat.skip=true \
+            -Dcheckstyle.skip=true \
+            -Dfindbugs.skip=true \
+            -Drequire.openssl=true \
+            -Dopenssl.prefix=$OPENSSL_PREFIX \
+            -Dbundle.openssl=false \
+            -Drequire.libwebhdfs=false \
+            -Drequire.fuse=false \
+            -Drequire.valgrind=false \
+            -Drequire.test.libhdfs=false \
+            -Dcmake.args="-DCMAKE_OSX_ARCHITECTURES=$NATIVE_ARCH" \
+            2>&1 | tee build-hdfs.log
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ hadoop-hdfs-native-client build FAILED"
+            exit 1
+          fi
+
+          echo "✅ libhdfs built successfully"
+
+      # ============================================
+      # STEP 11: Collect artifacts (native libraries and headers only)
+      # ============================================
+      - name: Collect libhdfs artifacts
+        run: |
+          echo "=== Collecting libhdfs artifacts (native only) ==="
+
+          mkdir -p $HOME/libhdfs-artifacts/native
+          mkdir -p $HOME/libhdfs-artifacts/headers
+
+          # Copy native libraries
+          if [ -d $HOME/hadoop-src/hadoop-common-project/hadoop-common/target/native/target/usr/local/lib ]; then
+            cp $HOME/hadoop-src/hadoop-common-project/hadoop-common/target/native/target/usr/local/lib/*.dylib \
+               $HOME/libhdfs-artifacts/native/ 2>/dev/null || true
+            cp $HOME/hadoop-src/hadoop-common-project/hadoop-common/target/native/target/usr/local/lib/*.a \
+               $HOME/libhdfs-artifacts/native/ 2>/dev/null || true
+          fi
+
+          if [ -d $HOME/hadoop-src/hadoop-hdfs-project/hadoop-hdfs-native-client/target/native/target/usr/local/lib ]; then
+            cp $HOME/hadoop-src/hadoop-hdfs-project/hadoop-hdfs-native-client/target/native/target/usr/local/lib/libhdfs.* \
+               $HOME/libhdfs-artifacts/native/
+          fi
+
+          # Copy headers
+          echo "=== Looking for headers ==="
+
+          # Try multiple possible locations
+          HEADER_LOCATIONS=(
+            "$HOME/hadoop-src/hadoop-hdfs-project/hadoop-hdfs-native-client/target/native/target/usr/local/include"
+            "$HOME/hadoop-src/hadoop-hdfs-project/hadoop-hdfs-native-client/src/main/native/libhdfs"
+            "$HOME/hadoop-src/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/io/nativeio"
+          )
+
+          for location in "${HEADER_LOCATIONS[@]}"; do
+            echo "Checking: $location"
+            if [ -d "$location" ]; then
+              echo "  Found headers in: $location"
+              find "$location" -name "*.h" -exec cp {} $HOME/libhdfs-artifacts/headers/ \;
+            fi
+          done
+
+          echo "Headers collected:"
+          ls -la $HOME/libhdfs-artifacts/headers/
+
+          echo "=== Artifacts collected (native libraries only) ==="
+          echo "Native libraries:"
+          ls -lh $HOME/libhdfs-artifacts/native/
+          echo ""
+          echo "Headers:"
+          ls -lh $HOME/libhdfs-artifacts/headers/
+
+      # ============================================
+      # STEP 12: Verify libhdfs
+      # ============================================
+      - name: Verify libhdfs artifacts
+        run: |
+          echo "=== Verifying libhdfs artifacts ==="
+
+          cd $HOME/libhdfs-artifacts/native
+
+          if [ ! -f "libhdfs.dylib" ]; then
+            echo "ERROR: libhdfs.dylib not found!"
+            exit 1
+          fi
+
+          echo "✅ libhdfs.dylib found"
+          ls -lh libhdfs.dylib
+
+          if [ ! -f "libhadoop.dylib" ] && [ ! -f "libhadoop.a" ]; then
+            echo "ERROR: libhadoop not found!"
+            exit 1
+          fi
+
+          echo "✅ libhadoop found"
+
+          echo "=== Architecture check ==="
+          file libhdfs.dylib
+
+          if ! file libhdfs.dylib | grep -q "${{ matrix.arch_name }}"; then
+            echo "ERROR: Wrong architecture!"
+            exit 1
+          fi
+
+          echo "✅ Architecture: ${{ matrix.arch_name }}"
+
+          echo "=== Dependencies ==="
+          otool -L libhdfs.dylib
+
+      # ============================================
+      # STEP 13: Create package (native libraries only)
+      # ============================================
+      - name: Create libhdfs package
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+          JAVA_BUILD_VERSION: ${{ inputs.java_build_version }}
+          JAVA_RUNTIME_VERSION: ${{ inputs.java_runtime_version }}
+          PROTOBUF_VERSION: ${{ inputs.protobuf_version }}
+        run: |
+          cd $HOME/libhdfs-artifacts
+
+          # Use BUILD_INFO template from repository
+          cp ${GITHUB_WORKSPACE}/.github/templates/BUILD_INFO.txt.template BUILD_INFO.txt
+          # macOS sed requires backup extension argument (use empty string for no backup)
+          sed -i '' "s/{{HADOOP_VERSION}}/${HADOOP_VERSION}/g" BUILD_INFO.txt
+          sed -i '' "s/{{BUILD_DATE}}/$(date -u +"%Y-%m-%d %H:%M:%S UTC")/g" BUILD_INFO.txt
+          sed -i '' "s/{{ARCH}}/${{ matrix.arch }}/g" BUILD_INFO.txt
+          sed -i '' "s/{{ARCH_NAME}}/${{ matrix.arch_name }}/g" BUILD_INFO.txt
+          sed -i '' "s/{{JAVA_BUILD_VERSION}}/${JAVA_BUILD_VERSION}/g" BUILD_INFO.txt
+          sed -i '' "s/{{JAVA_RUNTIME_VERSION}}/${JAVA_RUNTIME_VERSION}/g" BUILD_INFO.txt
+          sed -i '' "s/{{PROTOBUF_VERSION}}/${PROTOBUF_VERSION}/g" BUILD_INFO.txt
+          sed -i '' "s/{{GITHUB_RUN}}/${{ github.run_number }}/g" BUILD_INFO.txt
+
+          tar -czf libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz \
+            native/ headers/ BUILD_INFO.txt
+
+          shasum -a 256 libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz > \
+            libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}-optimized.tar.gz.sha256
+
+          echo "=== Package created (native libraries only) ==="
+          ls -lh *.tar.gz*
+
+      # ============================================
+      # STEP 14: Upload artifacts (native libraries only)
+      # ============================================
+      - name: Upload native libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-artifacts/native/
+          retention-days: 90
+
+      # ============================================
+      # STEP 15: Summary
+      # ============================================
+      - name: Build summary
+        if: success()
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+        run: |
+          echo "## ✅ libhdfs Build Successful (Optimized) - ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Optimization" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Native libraries built from source with compression support" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Skipped Java compilation and JAR downloads" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Cached Hadoop source for faster subsequent builds" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Significantly faster build time" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hadoop Version:** ${HADOOP_VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform:** macOS ${{ matrix.arch }} (${{ matrix.arch_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compression:** Snappy, LZ4, Zstd, Zlib" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Native Libraries Artifact" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifact name:** \`libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Contains:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`libhdfs.dylib\` / \`libhdfs.a\` - HDFS C API library" >> $GITHUB_STEP_SUMMARY
+          echo "- \`libhadoop.dylib\` / \`libhadoop.a\` - Hadoop native library" >> $GITHUB_STEP_SUMMARY
+          echo "- Headers (\`*.h\`) for C/C++ development" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** JAR files excluded from artifacts. Download separately from Maven Central if needed." >> $GITHUB_STEP_SUMMARY

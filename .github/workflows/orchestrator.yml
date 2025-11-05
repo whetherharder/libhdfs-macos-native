@@ -1,0 +1,109 @@
+name: Build and Test libhdfs (Modular)
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version to build (e.g., 3.3.6)'
+        required: false
+        default: '3.3.6'
+      force_build:
+        description: 'Force full build even if only tests/docs changed'
+        required: false
+        type: boolean
+        default: false
+      skip_build:
+        description: 'Skip build and run only tests (uses latest artifacts)'
+        required: false
+        type: boolean
+        default: false
+      run_integration_tests:
+        description: 'Run full integration tests with Ozone (default: false, only smoke tests)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  HADOOP_VERSION: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+  PROTOBUF_VERSION: '3.21.12'
+  JAVA_BUILD_VERSION: '11'
+  JAVA_RUNTIME_VERSION: '17'
+
+jobs:
+  # ============================================
+  # JOB 1: Check if build is needed
+  # ============================================
+  check-changes:
+    name: Check if build is needed
+    uses: ./.github/workflows/check-changes.yml
+    with:
+      hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+      force_build: ${{ github.event.inputs.force_build == 'true' }}
+      skip_build: ${{ github.event.inputs.skip_build == 'true' }}
+      event_name: ${{ github.event_name }}
+
+  # ============================================
+  # JOB 2: Setup Maven cache
+  # ============================================
+  setup-maven:
+    name: Setup Maven dependencies cache
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    uses: ./.github/workflows/setup-maven.yml
+    with:
+      hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+
+  # ============================================
+  # JOB 3: Build libhdfs (matrix: Intel + ARM64)
+  # ============================================
+  build-libhdfs:
+    name: Build libhdfs native libraries
+    needs: [check-changes, setup-maven]
+    if: needs.check-changes.outputs.should_build == 'true'
+    uses: ./.github/workflows/build-libhdfs.yml
+    with:
+      hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+      protobuf_version: '3.21.12'
+      java_build_version: '11'
+      java_runtime_version: '17'
+
+  # ============================================
+  # JOB 4: Smoke test (matrix: Intel + ARM64)
+  # ============================================
+  smoke-test:
+    name: Smoke test - Native library verification
+    needs: [check-changes, build-libhdfs]
+    # Always run if build succeeded OR build was skipped (use cached artifacts)
+    if: |
+      always() &&
+      (needs.build-libhdfs.result == 'success' ||
+       (needs.build-libhdfs.result == 'skipped' && needs.check-changes.outputs.should_build == 'false'))
+    uses: ./.github/workflows/smoke-test.yml
+    with:
+      hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+      should_build: ${{ needs.check-changes.outputs.should_build }}
+
+  # ============================================
+  # JOB 5: Integration tests (matrix: Intel + ARM64)
+  # ============================================
+  integration-tests:
+    name: Integration tests with PyArrow
+    needs: [check-changes, build-libhdfs]
+    # Run when:
+    # - Manual trigger with run_integration_tests=true, OR
+    # - Push to main branch
+    # AND
+    # - Build succeeded OR build was skipped (use cached artifacts)
+    if: |
+      always() &&
+      (needs.build-libhdfs.result == 'success' ||
+       (needs.build-libhdfs.result == 'skipped' && needs.check-changes.outputs.should_build == 'false')) &&
+      (github.event.inputs.run_integration_tests == 'true' || github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/integration-test.yml
+    with:
+      hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
+      should_build: ${{ needs.check-changes.outputs.should_build }}

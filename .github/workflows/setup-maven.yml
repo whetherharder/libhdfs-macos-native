@@ -1,0 +1,81 @@
+name: Setup Maven dependencies cache
+
+on:
+  workflow_call:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version to build'
+        type: string
+        required: true
+
+jobs:
+  setup:
+    name: Setup Maven dependencies cache
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Restore Maven cache
+        id: cache-maven-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-optimized-hadoop-${{ inputs.hadoop_version }}-v4
+          restore-keys: |
+            ${{ runner.os }}-maven-optimized-hadoop-${{ inputs.hadoop_version }}-
+            ${{ runner.os }}-maven-optimized-hadoop-
+            ${{ runner.os }}-maven-optimized-
+
+      - name: Download Maven dependencies and plugins
+        if: steps.cache-maven-restore.outputs.cache-hit != 'true'
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+        run: |
+          echo "=== Downloading ALL Maven dependencies and plugins for Hadoop ${HADOOP_VERSION} ==="
+
+          # Download Hadoop source
+          cd $HOME
+          if [ ! -d "hadoop-src" ]; then
+            curl -L -o hadoop-${HADOOP_VERSION}-src.tar.gz \
+              https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-src.tar.gz
+            tar -xzf hadoop-${HADOOP_VERSION}-src.tar.gz
+            mv hadoop-${HADOOP_VERSION}-src hadoop-src
+          fi
+
+          cd $HOME/hadoop-src
+
+          echo "=== Downloading plugins and dependencies for hadoop-common ==="
+          # Download runtime dependencies
+          mvn dependency:go-offline -pl hadoop-common-project/hadoop-common -Pnative -B || true
+
+          # Download Maven plugins (enforcer, protobuf, cmake, etc.)
+          mvn dependency:resolve-plugins -pl hadoop-common-project/hadoop-common -Pnative -B || true
+
+          # Trigger validate phase to ensure all plugins are downloaded
+          mvn validate -pl hadoop-common-project/hadoop-common -Pnative -DskipTests -B || true
+
+          echo "=== Downloading plugins and dependencies for hadoop-hdfs-native-client ==="
+          mvn dependency:go-offline -pl hadoop-hdfs-project/hadoop-hdfs-native-client -am -Pnative -B || true
+          mvn dependency:resolve-plugins -pl hadoop-hdfs-project/hadoop-hdfs-native-client -am -Pnative -B || true
+          mvn validate -pl hadoop-hdfs-project/hadoop-hdfs-native-client -am -Pnative -DskipTests -B || true
+
+          echo "✅ Maven dependencies and plugins downloaded"
+
+      - name: Save Maven cache
+        if: steps.cache-maven-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-optimized-hadoop-${{ inputs.hadoop_version }}-v4

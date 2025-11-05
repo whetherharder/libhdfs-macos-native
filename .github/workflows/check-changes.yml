@@ -1,0 +1,133 @@
+name: Check if build is needed
+
+on:
+  workflow_call:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version to build'
+        type: string
+        required: true
+      force_build:
+        description: 'Force full build even if only tests/docs changed'
+        type: boolean
+        required: false
+        default: false
+      skip_build:
+        description: 'Skip build and use latest artifacts'
+        type: boolean
+        required: false
+        default: false
+      event_name:
+        description: 'Event that triggered the workflow (push/pull_request/workflow_dispatch)'
+        type: string
+        required: true
+    outputs:
+      should_build:
+        description: 'Whether build should run (true/false)'
+        value: ${{ jobs.check.outputs.should_build }}
+
+jobs:
+  check:
+    name: Analyze changes and artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if build is needed
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== Build Decision Logic ==="
+
+          # Priority 0: force_build=true → always build
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Priority 0: force_build=true - building"
+            exit 0
+          fi
+
+          # Priority 1: skip_build=true → skip build
+          if [ "${{ inputs.skip_build }}" = "true" ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "✅ Priority 1: skip_build=true - skipping build"
+            exit 0
+          fi
+
+          # Priority 2: Manual trigger → always build
+          if [ "${{ inputs.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Priority 2: Manual trigger - building"
+            exit 0
+          fi
+
+          # Priority 3: Check changed files
+          echo "=== Checking changed files ==="
+          git diff --name-only HEAD^ HEAD > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+          # Files that don't require rebuild (test scripts, test configs, docs only)
+          # NOTE: workflow changes ALWAYS trigger rebuild
+          TEST_ONLY_PATTERN="^(\.github/(tests/|templates/ozone-docker-compose\.yml)|CLAUDE\.md|README\.md)"
+
+          if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Priority 3: Source code, patches, or workflow changed - building"
+            exit 0
+          fi
+
+          # Priority 4: Only test/docs changed - check if artifacts exist
+          echo "=== Priority 4: Only test/docs changed - checking artifacts ==="
+
+          WORKFLOW_NAME="orchestrator.yml"
+          HADOOP_VERSION="${{ inputs.hadoop_version }}"
+
+          # Find latest successful workflow run
+          LATEST_RUN=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow="$WORKFLOW_NAME" \
+            --status=success \
+            --limit=1 \
+            --json databaseId \
+            --jq='.[0].databaseId')
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "⚠️  No successful runs found - forcing build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Latest successful run: $LATEST_RUN"
+
+          # Check if artifacts exist for both architectures
+          ARTIFACTS=$(gh run view $LATEST_RUN \
+            --repo ${{ github.repository }} \
+            --json artifacts \
+            --jq '.artifacts[].name')
+
+          echo "Available artifacts:"
+          echo "$ARTIFACTS"
+
+          # Check for Intel artifact
+          if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-intel-x86_64"; then
+            echo "⚠️  Intel artifact not found - forcing build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check for ARM64 artifact
+          if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-apple-silicon-arm64"; then
+            echo "⚠️  ARM64 artifact not found - forcing build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "✅ Both artifacts found - skipping build, will reuse artifacts"
+          echo "should_build=false" >> $GITHUB_OUTPUT

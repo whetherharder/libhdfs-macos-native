@@ -1,0 +1,239 @@
+name: Integration tests with PyArrow
+
+on:
+  workflow_call:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version'
+        type: string
+        required: true
+      should_build:
+        description: 'Whether build ran (true) or artifacts from previous run (false)'
+        type: string
+        required: true
+
+jobs:
+  test:
+    name: Integration tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          - arch: intel-x86_64
+            runner: macos-15-intel
+            arch_name: x86_64
+          - arch: apple-silicon-arm64
+            runner: macos-15
+            arch_name: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          architecture: x64
+
+      # ============================================
+      # Download artifacts with enhanced logic and retry
+      # ============================================
+      - name: Download libhdfs artifacts (from current run)
+        if: inputs.should_build == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-artifacts/native
+
+      - name: Download libhdfs artifacts (from latest successful run)
+        if: inputs.should_build == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== Downloading artifacts from latest successful run with retry ==="
+
+          # Find latest successful workflow run
+          WORKFLOW_NAME="orchestrator.yml"
+          LATEST_RUN=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow="$WORKFLOW_NAME" \
+            --status=success \
+            --limit=1 \
+            --json databaseId \
+            --jq='.[0].databaseId')
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "❌ No successful runs found"
+            echo "💡 Trigger new workflow run with force_build=true"
+            exit 1
+          fi
+
+          echo "Found successful run: $LATEST_RUN"
+
+          # Download artifact with retry (3 attempts, 300s timeout each)
+          mkdir -p ~/libhdfs-artifacts/native
+
+          for attempt in 1 2 3; do
+            echo "Download attempt $attempt/3..."
+
+            if timeout 300 gh run download $LATEST_RUN \
+              --repo ${{ github.repository }} \
+              --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
+              --dir ~/libhdfs-artifacts/native 2>&1; then
+
+              echo "✅ Download successful"
+
+              # Validate artifact (check if libhdfs.dylib exists)
+              if [ -f ~/libhdfs-artifacts/native/libhdfs.dylib ]; then
+                echo "✅ Artifact validated (libhdfs.dylib found)"
+                exit 0
+              else
+                echo "⚠️  Artifact incomplete (libhdfs.dylib missing)"
+                exit 1
+              fi
+            fi
+
+            if [ $attempt -lt 3 ]; then
+              echo "Retry in 10 seconds..."
+              sleep 10
+            fi
+          done
+
+          echo "❌ Artifact download failed after 3 attempts"
+          echo "💡 Possible reasons:"
+          echo "   - Artifact expired (90 day retention)"
+          echo "   - Artifact for wrong Hadoop version"
+          echo "   - Network issues"
+          echo "💡 Solution: Run workflow with force_build=true"
+          exit 1
+
+      # ============================================
+      # Download Hadoop JARs for integration tests
+      # ============================================
+      - name: Download Hadoop JARs for integration tests
+        env:
+          HADOOP_VERSION: ${{ inputs.hadoop_version }}
+        run: |
+          echo "=== Downloading Hadoop JARs for integration tests ==="
+
+          mkdir -p ~/libhdfs-artifacts/jars
+          cd ~/libhdfs-artifacts/jars
+
+          # Use pom.xml template from repository
+          cp ${GITHUB_WORKSPACE}/.github/templates/pom-download-jars.xml.template pom.xml
+          # macOS sed requires backup extension argument (use empty string for no backup)
+          sed -i '' "s/{{HADOOP_VERSION}}/${HADOOP_VERSION}/g" pom.xml
+
+          # Download JARs with dependencies
+          mvn dependency:copy-dependencies -DoutputDirectory=. -DincludeScope=runtime
+
+          echo "✅ Hadoop JARs downloaded"
+          echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
+
+      # ============================================
+      # Basic library loading test
+      # ============================================
+      - name: Basic libhdfs test (library loading only)
+        run: |
+          echo "=== Basic library loading test ==="
+
+          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
+          export DYLD_LIBRARY_PATH=~/libhdfs-artifacts/native:$JAVA_HOME/lib/server
+
+          python3 .github/tests/test_library_loading.py
+
+          echo "✅ Basic library loading test completed"
+
+      # ============================================
+      # Start Ozone with Docker Compose
+      # ============================================
+      - name: Start Ozone with Docker Compose
+        run: |
+          echo "=== Starting Ozone mini cluster with Docker Compose ==="
+
+          cd ${GITHUB_WORKSPACE}/.github/templates
+
+          # Start Ozone in background
+          docker compose -f ozone-docker-compose.yml up -d
+
+          echo "=== Waiting for Ozone to be healthy ==="
+          # Wait for healthcheck to pass (max 60 seconds)
+          OZONE_READY=false
+          for i in {1..60}; do
+            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
+              echo "✅ Ozone ready in $i seconds!"
+              OZONE_READY=true
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 1
+          done
+
+          if [ "$OZONE_READY" = false ]; then
+            echo "⚠️  Ozone did not become healthy within 60 seconds"
+            echo "=== Docker logs ==="
+            docker compose -f ozone-docker-compose.yml logs
+            exit 1
+          fi
+
+          echo "=== Ozone status ==="
+          docker compose -f ozone-docker-compose.yml ps
+
+      # ============================================
+      # Install Python dependencies
+      # ============================================
+      - name: Install Python dependencies
+        run: |
+          pip3 install pyarrow pandas
+
+      # ============================================
+      # Run PyArrow integration tests
+      # ============================================
+      - name: Run PyArrow integration tests
+        run: |
+          export HADOOP_HOME=~/libhdfs-artifacts
+          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
+          export DYLD_LIBRARY_PATH=$HADOOP_HOME/native:$JAVA_HOME/lib/server
+          export HDFS_HOST=localhost
+          export HDFS_PORT=9862
+
+          python3 .github/tests/test_libhdfs_pyarrow.py || {
+            echo "❌ PyArrow integration tests failed"
+            echo "Note: Ozone logs are inside the service container (not accessible directly)"
+            exit 1
+          }
+
+      # ============================================
+      # Cleanup Ozone
+      # ============================================
+      - name: Cleanup Ozone
+        if: always()
+        run: |
+          cd ${GITHUB_WORKSPACE}/.github/templates
+          docker compose -f ozone-docker-compose.yml down -v || true
+          docker compose -f ozone-docker-compose.yml rm -f || true
+
+      # ============================================
+      # Integration test summary
+      # ============================================
+      - name: Integration test summary
+        if: success()
+        run: |
+          echo "## ✅ Integration Tests Passed - ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tests completed:" >> $GITHUB_STEP_SUMMARY
+          echo "- Basic library loading" >> $GITHUB_STEP_SUMMARY
+          echo "- PyArrow HDFS integration" >> $GITHUB_STEP_SUMMARY
+          echo "- All compression algorithms (snappy, gzip, lz4, zstd)" >> $GITHUB_STEP_SUMMARY
+          echo "- File I/O operations" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Architecture:** ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY

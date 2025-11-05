@@ -1,0 +1,92 @@
+name: Smoke test - Native library verification
+
+on:
+  workflow_call:
+    inputs:
+      hadoop_version:
+        description: 'Hadoop version'
+        type: string
+        required: true
+      should_build:
+        description: 'Whether build ran (true) or artifacts from previous run (false)'
+        type: string
+        required: true
+
+jobs:
+  test:
+    name: Smoke test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          - arch: intel-x86_64
+            runner: macos-15-intel
+            arch_name: x86_64
+          - arch: apple-silicon-arm64
+            runner: macos-15
+            arch_name: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          architecture: x64
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download libhdfs artifacts (from current run)
+        if: inputs.should_build == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-native
+
+      - name: Download libhdfs artifacts (from latest successful run)
+        if: inputs.should_build == 'false'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: orchestrator.yml
+          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-native
+          search_artifacts: true
+
+      - name: Verify native libraries load correctly
+        run: |
+          echo "=== Smoke test: Native library loading ==="
+
+          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
+          export DYLD_LIBRARY_PATH=~/libhdfs-native:$JAVA_HOME/lib/server
+
+          echo "Libraries:"
+          ls -lh ~/libhdfs-native/
+
+          echo ""
+          echo "Architecture check:"
+          file ~/libhdfs-native/libhdfs.dylib
+
+          echo ""
+          echo "Testing library loading..."
+          python3 .github/tests/test_library_loading.py
+
+          echo "✅ Smoke test passed - native libraries load correctly!"
+
+      - name: Smoke test summary
+        if: success()
+        run: |
+          echo "## ✅ Smoke Test Passed - ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Native libraries verified:" >> $GITHUB_STEP_SUMMARY
+          echo "- Library loading successful" >> $GITHUB_STEP_SUMMARY
+          echo "- Architecture: ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- No JAR files or Ozone cluster required" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** ~1-2 minutes" >> $GITHUB_STEP_SUMMARY
