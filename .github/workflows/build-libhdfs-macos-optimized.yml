@@ -317,7 +317,8 @@ message("DEBUG: CMAKE_SYSTEM_PROCESSOR=\${CMAKE_SYSTEM_PROCESSOR}, CMAKE_OSX_ARC
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_OSX_ARCHITECTURES MATCHES "arm64")\
   set(BULK_CRC_ARCH_SOURCE_FIlE "${SRC}/util/bulk_crc32_aarch64.c")\
   message("Using ARM64 CRC32 implementation")\
-el
+endif()\
+\
 ' "$CMAKE_FILE"
 
           # Verify the fix
