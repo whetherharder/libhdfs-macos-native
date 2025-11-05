@@ -81,7 +81,7 @@ jobs:
           BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(build-libhdfs|setup-maven)\.yml"
 
           # Non-build-affecting workflows (can skip rebuild if artifacts exist)
-          NON_BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(check-changes|smoke-test|integration-test|orchestrator)\.yml"
+          NON_BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(check-changes|smoke-test|integration-test|orchestrator|ozone-integration-tests)\.yml"
 
           # Check if build-affecting workflows changed
           if grep -E "$BUILD_AFFECTING_WORKFLOWS" changed_files.txt; then

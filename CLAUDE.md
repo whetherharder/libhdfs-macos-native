@@ -48,13 +48,19 @@ gh workflow run orchestrator.yml \
 
 # Skip build, run tests only (use cached artifacts)
 gh workflow run orchestrator.yml \
-  --field skip_build=true \
-  --field run_integration_tests=true
+  --field skip_build=true
 
-# Full build with integration tests
-gh workflow run orchestrator.yml \
-  --field hadoop_version=3.3.6 \
-  --field run_integration_tests=true
+# Standalone Docker/Ozone tests (always uses pre-built artifacts)
+gh workflow run ozone-integration-tests.yml \
+  --field test_architecture=both
+
+# Test only Intel architecture
+gh workflow run ozone-integration-tests.yml \
+  --field test_architecture=intel-x86_64
+
+# Test only ARM64 architecture
+gh workflow run ozone-integration-tests.yml \
+  --field test_architecture=apple-silicon-arm64
 ```
 
 ### Test Integration Locally
@@ -97,8 +103,8 @@ gcc .github/templates/test_libhdfs.c -o test_libhdfs \
 │   ├── setup-maven.yml                    # Reusable: Setup Maven dependencies cache
 │   ├── build-libhdfs.yml                  # Reusable: Build native libraries (matrix: Intel + ARM64)
 │   ├── smoke-test.yml                     # Reusable: Fast native library verification (matrix)
-│   ├── integration-test.yml               # Reusable: PyArrow tests with Ozone (matrix + service containers)
-│   └── build-libhdfs-macos-optimized.yml.old  # Legacy monolithic workflow (backup)
+│   ├── integration-test.yml               # Reusable: PyArrow tests with Ozone (matrix + Docker Compose)
+│   └── ozone-integration-tests.yml        # Standalone: Manual Docker/Ozone tests (always use pre-built artifacts)
 ├── patches/
 │   ├── hadoop-3.3.6-exception-macos.patch      # macOS exception.c patch
 │   ├── hadoop-3.3.6-macos-openssl.cmake        # OpenSSL path configuration
@@ -224,6 +230,38 @@ The workflow system is **modular**, using reusable workflows for each stage. The
   6. Run PyArrow integration tests with compression
   7. Cleanup: docker compose down
 - **Time**: ~5-10 minutes per architecture
+
+### 6. `ozone-integration-tests.yml` - Standalone Docker/Ozone Tests
+**File**: `.github/workflows/ozone-integration-tests.yml`
+
+- **Standalone workflow** (NOT called by orchestrator)
+- **Manual trigger only** (`workflow_dispatch`)
+- **ALWAYS uses pre-built artifacts** (never triggers rebuild)
+- **Matrix strategy**: Intel x86_64 + ARM64 (parallel)
+- **Architecture selection**: Can test both, Intel only, or ARM64 only
+- **Docker requirements**:
+  - Checks for Docker availability before starting
+  - Can optionally install Docker via Colima if missing
+  - **Note:** Docker NOT available on GitHub macOS runners by default
+- **Purpose**: Isolated testing environment for Docker/Ozone validation
+- **Key features**:
+  1. Downloads latest successful artifacts from orchestrator.yml
+  2. Downloads Hadoop JARs for tests
+  3. Starts Ozone cluster with Docker Compose v2
+  4. Runs PyArrow integration tests
+  5. Independent from main CI/CD pipeline
+  6. Can be modified without triggering builds
+- **Time**: ~5-10 minutes per architecture (depending on Docker availability)
+- **Use cases**:
+  - Testing Docker/Ozone integration without full rebuild
+  - Debugging Ozone cluster issues
+  - Validating existing artifacts with fresh Ozone cluster
+  - Development iteration on integration tests
+
+**Workflow categorization**:
+- Listed in NON_BUILD_AFFECTING_WORKFLOWS in check-changes.yml
+- Modifications to this workflow will NOT trigger rebuilds
+- Safe to iterate on Docker/Ozone setup without affecting builds
 
 ### Key Improvements in Modular Architecture
 
@@ -426,3 +464,4 @@ Claude-specific branches (`claude/**`) are included to allow experimental builds
 - всегда используй агент после пуша
 - всегда используй агент чтобы мониторить билд
 - перед пушем делай ревью. для этого используй агент
+- все временные файлы создавай только в своей директории
