@@ -19,9 +19,11 @@ The build workflow uses a highly optimized approach that **skips JAR downloads e
 5. **JAR files downloaded only in integration tests** (not included in artifacts)
 
 This approach reduces build time:
-- **Feature branches**: ~9-13 minutes (build + smoke test only)
+- **Feature branches (full build)**: ~9-13 minutes (build + smoke test only)
+- **Feature branches (test-only changes)**: ~2-3 minutes (smoke test with cached artifacts)
 - **Main branch**: ~15-20 minutes (includes full integration tests)
 - **With Hadoop source cache hit**: Additional ~15 seconds saved
+- **Smart build detection**: Automatically skips rebuild when only tests/docs/workflows changed
 
 ## Common Commands
 
@@ -95,17 +97,32 @@ gcc .github/templates/test_libhdfs.c -o test_libhdfs \
 
 ## Workflow Architecture
 
-The main workflow (`.github/workflows/build-libhdfs-macos-optimized.yml`) has four jobs:
+The main workflow (`.github/workflows/build-libhdfs-macos-optimized.yml`) has five jobs:
+
+### Job 0: `check-changes` **[NEW]**
+- Runs on Ubuntu (fast startup)
+- Analyzes changed files to determine if build is needed
+- **Smart build detection**:
+  - If only tests/workflows/docs changed → skips build, uses latest artifacts
+  - If source code/patches changed → triggers full build
+  - Manual triggers always respect `skip_build` parameter
+- **Files that don't require rebuild**:
+  - `.github/workflows/*` (workflow files)
+  - `.github/tests/*` (test scripts)
+  - `.github/templates/ozone-docker-compose.yml`
+  - `CLAUDE.md`, `README.md`
+- **Output**: `should_build` (true/false)
 
 ### Job 1: `setup-maven`
-- Runs once on Intel runner (macos-13)
+- Runs once on Intel runner (macos-15)
 - Downloads Maven dependencies and plugins
 - Creates Maven cache for subsequent jobs
-- Only runs if `skip_build != true`
+- Only runs if `should_build == true`
 
 ### Job 2: `build-libhdfs` (matrix: Intel & ARM64)
-- Depends on `setup-maven`
+- Depends on `check-changes` and `setup-maven`
 - Runs in parallel for both architectures
+- Only runs if `should_build == true`
 - **Key steps**:
   1. Setup Java 11 (build only)
   2. Install Homebrew dependencies: cmake, maven, protobuf@21, openssl@3, snappy, lz4, zstd, zlib
@@ -120,37 +137,45 @@ The main workflow (`.github/workflows/build-libhdfs-macos-optimized.yml`) has fo
 
 **Note:** JAR downloads completely removed from this job to save time.
 
-### Job 3: `smoke-test` (matrix: Intel & ARM64) **[NEW]**
-- Runs after successful `build-libhdfs`
+### Job 3: `smoke-test` (matrix: Intel & ARM64)
+- Runs after `check-changes` and `build-libhdfs`
 - **Always runs** on all branches (fast feedback loop)
+- **Smart artifact download**:
+  - If `should_build == true` → downloads from current run
+  - If `should_build == false` → downloads from latest successful run
 - **Key steps**:
-  1. Download libhdfs artifacts from current run
+  1. Download libhdfs artifacts (current or latest)
   2. Verify native libraries load correctly using `test_library_loading.py`
   3. No JAR files needed, no Ozone cluster needed
 - **Time**: ~1-2 minutes per architecture
 - **Purpose**: Catch 80% of build issues quickly
 
 ### Job 4: `integration-tests` (matrix: Intel & ARM64)
-- Runs after successful `build-libhdfs` or when `skip_build == true`
+- Runs after `check-changes` and `build-libhdfs`
 - **Only runs when**:
   - Manual trigger with `run_integration_tests = true`, OR
   - Push to `main` branch
+- **Smart artifact download**:
+  - If `should_build == true` → downloads from current run
+  - If `should_build == false` → downloads from latest successful run
 - **Key steps**:
-  1. Download libhdfs artifacts from current/previous run
+  1. Download libhdfs artifacts (current or latest)
   2. **Download Hadoop JARs** for integration tests (only here!)
   3. Run basic library loading test
   4. **Start Ozone with Docker Compose** (`.github/templates/ozone-docker-compose.yml`)
   5. Wait for Ozone health check to pass
   6. Run PyArrow integration tests with compression
-  7. Cleanup: docker-compose down
+  7. Cleanup: docker compose down
 - **Time**: ~5-10 minutes per architecture
 
 **Key optimizations**:
-- **Ozone via Docker Compose**: Much faster and more reliable than manual setup
+- **Smart build detection**: Automatically skips rebuild when only tests/docs changed (~15 min → ~2-3 min)
+- **Ozone via Docker Compose v2**: Uses `docker compose` (not `docker-compose`) for compatibility with latest GitHub Actions runners
 - Built-in health checks ensure Ozone is ready before tests
 - JAR files only downloaded when integration tests actually run
 - Integration tests skipped on feature branches by default
 - No need to cache Ozone tarball anymore
+- Artifact reuse from previous successful runs when build is skipped
 
 ## Patches
 
@@ -287,11 +312,40 @@ on:
 ```
 
 Claude-specific branches (`claude/**`) are included to allow experimental builds.
+
+## Important Changes & Troubleshooting
+
+### Docker Compose v2 Migration (2025-11-06)
+**Issue**: GitHub Actions macOS runners no longer support `docker-compose` (v1 with hyphen).
+
+**Solution**: All Docker Compose commands migrated to v2 syntax:
+- ❌ Old: `docker-compose -f file.yml up`
+- ✅ New: `docker compose -f file.yml up`
+
+**Impact**: Integration tests that use Ozone Docker Compose now work correctly on latest runners.
+
+### Smart Build Detection (2025-11-06)
+**Feature**: Workflow now automatically detects if full build is needed based on changed files.
+
+**Behavior**:
+- Changes to `.github/patches/*`, source code → **Full build** (~15 min)
+- Changes to `.github/workflows/*`, `.github/tests/*`, docs → **Skip build, reuse artifacts** (~2-3 min)
+- Manual triggers with `skip_build=true` → Always skip build
+- Manual triggers without `skip_build` → Always build
+
+**Benefits**:
+- Faster feedback when fixing tests or updating documentation
+- Saves ~12-13 minutes when only test/workflow changes are made
+- Automatically downloads artifacts from latest successful run
+
+## Claude Code Instructions
+
 - все патч только отдельными файлами! никаких инлайнов в билд
 - перед пушем проверяй валидность yaml, корректность патчей
 - всегда используй mcp где это возможно
-- запомни создавать патчи всегда нужно единственным способом
-копируешь исходный файл
-вносишь в нем изменения
-создаешь патч средствами git
-больше никак
+- запомни создавать патчи всегда нужно единственным способом:
+  1. копируешь исходный файл
+  2. вносишь в нем изменения
+  3. создаешь патч средствами git
+  4. больше никак
+- всегда используй агент после пуша

@@ -30,12 +30,59 @@ env:
 
 jobs:
   # ============================================
+  # JOB 0: Check if build is needed
+  # ============================================
+  check-changes:
+    name: Check if build is needed
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check changed files
+        id: check
+        run: |
+          # If manual trigger with skip_build=true, skip build
+          if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Manual trigger with skip_build=true - skipping build"
+            exit 0
+          fi
+
+          # For workflow_dispatch without skip_build, always build
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Manual trigger - building"
+            exit 0
+          fi
+
+          # Check if only test/docs files changed
+          git diff --name-only HEAD^ HEAD > changed_files.txt
+          cat changed_files.txt
+
+          # Files that don't require rebuild
+          TEST_ONLY_PATTERN="^(\.github/(workflows|tests|templates/ozone-docker-compose\.yml)|CLAUDE\.md|README\.md)"
+
+          if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Source code or patches changed - building"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Only test/docs files changed - skipping build, will use latest artifacts"
+          fi
+
+  # ============================================
   # JOB 1: Setup Maven cache (runs once)
   # ============================================
   setup-maven:
     name: Setup Maven dependencies cache
     runs-on: macos-15
-    if: github.event.inputs.skip_build != 'true'
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
 
     steps:
       - name: Checkout repository
@@ -108,8 +155,8 @@ jobs:
   build-libhdfs:
     name: Build libhdfs (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    needs: setup-maven
-    if: github.event.inputs.skip_build != 'true'
+    needs: [check-changes, setup-maven]
+    if: needs.check-changes.outputs.should_build == 'true'
 
     strategy:
       matrix:
@@ -681,8 +728,8 @@ jobs:
   smoke-test:
     name: Smoke test - Native library verification (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    needs: build-libhdfs
-    if: always() && needs.build-libhdfs.result == 'success'
+    needs: [check-changes, build-libhdfs]
+    if: always() && (needs.build-libhdfs.result == 'success' || (needs.build-libhdfs.result == 'skipped' && needs.check-changes.outputs.should_build == 'false'))
 
     strategy:
       matrix:
@@ -710,11 +757,21 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download libhdfs artifacts
+      - name: Download libhdfs artifacts (from current run)
+        if: needs.check-changes.outputs.should_build == 'true'
         uses: actions/download-artifact@v4
         with:
           name: libhdfs-${{ env.HADOOP_VERSION }}-macos-${{ matrix.arch }}
           path: ~/libhdfs-native
+
+      - name: Download libhdfs artifacts (from latest successful run)
+        if: needs.check-changes.outputs.should_build == 'false'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: build-libhdfs-macos-optimized.yml
+          name: libhdfs-${{ env.HADOOP_VERSION }}-macos-${{ matrix.arch }}
+          path: ~/libhdfs-native
+          search_artifacts: true
 
       - name: Verify native libraries load correctly
         run: |
@@ -754,10 +811,10 @@ jobs:
   integration-tests:
     name: Integration tests with PyArrow (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    needs: build-libhdfs
+    needs: [check-changes, build-libhdfs]
     if: |
       always() &&
-      (needs.build-libhdfs.result == 'success' || github.event.inputs.skip_build == 'true') &&
+      (needs.build-libhdfs.result == 'success' || (needs.build-libhdfs.result == 'skipped' && needs.check-changes.outputs.should_build == 'false')) &&
       (github.event.inputs.run_integration_tests == 'true' || github.ref == 'refs/heads/main')
 
     strategy:
@@ -787,14 +844,14 @@ jobs:
           architecture: x64
 
       - name: Download libhdfs artifacts (from current run)
-        if: github.event.inputs.skip_build != 'true'
+        if: needs.check-changes.outputs.should_build == 'true'
         uses: actions/download-artifact@v4
         with:
           name: libhdfs-${{ env.HADOOP_VERSION }}-macos-${{ matrix.arch }}
           path: ~/libhdfs-artifacts/native
 
       - name: Download libhdfs artifacts (from latest successful run)
-        if: github.event.inputs.skip_build == 'true'
+        if: needs.check-changes.outputs.should_build == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -854,13 +911,13 @@ jobs:
           cd ${GITHUB_WORKSPACE}/.github/templates
 
           # Start Ozone in background
-          docker-compose -f ozone-docker-compose.yml up -d
+          docker compose -f ozone-docker-compose.yml up -d
 
           echo "=== Waiting for Ozone to be healthy ==="
           # Wait for healthcheck to pass (max 60 seconds)
           OZONE_READY=false
           for i in {1..60}; do
-            if docker-compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
+            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
               echo "✅ Ozone ready in $i seconds!"
               OZONE_READY=true
               break
@@ -872,12 +929,12 @@ jobs:
           if [ "$OZONE_READY" = false ]; then
             echo "⚠️  Ozone did not become healthy within 60 seconds"
             echo "=== Docker logs ==="
-            docker-compose -f ozone-docker-compose.yml logs
+            docker compose -f ozone-docker-compose.yml logs
             exit 1
           fi
 
           echo "=== Ozone status ==="
-          docker-compose -f ozone-docker-compose.yml ps
+          docker compose -f ozone-docker-compose.yml ps
 
       - name: Install Python dependencies
         run: |
@@ -903,5 +960,5 @@ jobs:
         if: always()
         run: |
           cd ${GITHUB_WORKSPACE}/.github/templates
-          docker-compose -f ozone-docker-compose.yml down -v || true
-          docker-compose -f ozone-docker-compose.yml rm -f || true
+          docker compose -f ozone-docker-compose.yml down -v || true
+          docker compose -f ozone-docker-compose.yml rm -f || true
