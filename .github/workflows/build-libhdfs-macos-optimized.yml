@@ -136,7 +136,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          architecture: x64
+          architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
 
       # ============================================
       # STEP 3: Install build dependencies
