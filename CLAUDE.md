@@ -287,3 +287,5 @@ on:
 ```
 
 Claude-specific branches (`claude/**`) are included to allow experimental builds.
+- все патч только отдельными файлами! никаких инлайнов в билд
+- перед пушем проверяй валидность yaml, корректность патчей

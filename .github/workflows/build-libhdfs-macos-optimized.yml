@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v15
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v16
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -300,35 +300,10 @@ jobs:
           patch --forward -p1 < "$OPENSSL_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ OpenSSL 3.x compatibility patch applied"
 
-          # Fix ARM64 architecture detection by checking ARM64 FIRST (before x86 check)
-          # Problem: CMAKE_SYSTEM_PROCESSOR might be x86_64 even on ARM64 runners, so we need to prioritize CMAKE_OSX_ARCHITECTURES
-          CMAKE_FILE="hadoop-common-project/hadoop-common/src/CMakeLists.txt"
-          echo "=== Fixing ARM64 architecture detection in CMakeLists.txt ==="
-
-          # First, add a diagnostic message to see what CMAKE_SYSTEM_PROCESSOR and CMAKE_OSX_ARCHITECTURES are
-          sed -i '' '/# Build hardware CRC32 acceleration, if supported on the platform./a\
-message("DEBUG: CMAKE_SYSTEM_PROCESSOR=\${CMAKE_SYSTEM_PROCESSOR}, CMAKE_OSX_ARCHITECTURES=\${CMAKE_OSX_ARCHITECTURES}")
-' "$CMAKE_FILE"
-
-          # Now add a NEW if() condition to check for ARM64 FIRST (before the x86 check)
-          # This ensures ARM64 is detected even if CMAKE_SYSTEM_PROCESSOR is somehow x86_64
-          sed -i '' '/if(CMAKE_SYSTEM_PROCESSOR MATCHES/i\
-# Check for ARM64 FIRST to avoid false matches with x86_64\
-if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_OSX_ARCHITECTURES MATCHES "arm64")\
-  set(BULK_CRC_ARCH_SOURCE_FIlE "${SRC}/util/bulk_crc32_aarch64.c")\
-  message("Using ARM64 CRC32 implementation")\
-endif()\
-\
-' "$CMAKE_FILE"
-
-          # Verify the fix
-          if grep -q 'CMAKE_OSX_ARCHITECTURES MATCHES "arm64"' "$CMAKE_FILE"; then
-            echo "✅ ARM64 architecture detection fixed (ARM64 check added FIRST)"
-            grep -B2 -A3 'CMAKE_OSX_ARCHITECTURES MATCHES "arm64"' "$CMAKE_FILE" | head -10
-          else
-            echo "❌ ARM64 fix failed - line not found"
-            exit 1
-          fi
+          # Apply ARM64 CRC32 priority patch (checks CMAKE_OSX_ARCHITECTURES FIRST)
+          ARM64_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-crc32-priority.patch"
+          patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ ARM64 CRC32 priority patch applied"
 
           # Fix cmake_minimum_required in ALL HDFS CMakeLists.txt files (including root)
           echo "=== Fixing CMake version in HDFS native client (all CMakeLists.txt) ==="
