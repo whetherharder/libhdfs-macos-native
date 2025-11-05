@@ -103,14 +103,17 @@ The main workflow (`.github/workflows/build-libhdfs-macos-optimized.yml`) has fi
 - Runs on Ubuntu (fast startup)
 - Analyzes changed files to determine if build is needed
 - **Smart build detection**:
-  - If only tests/workflows/docs changed → skips build, uses latest artifacts
-  - If source code/patches changed → triggers full build
+  - If only test scripts or docs changed → skips build, uses latest artifacts
+  - If source code, patches, or workflows changed → triggers full build
   - Manual triggers always respect `skip_build` parameter
-- **Files that don't require rebuild**:
-  - `.github/workflows/*` (workflow files)
+- **Files that don't require rebuild** (test scripts and docs only):
   - `.github/tests/*` (test scripts)
-  - `.github/templates/ozone-docker-compose.yml`
-  - `CLAUDE.md`, `README.md`
+  - `.github/templates/ozone-docker-compose.yml` (test config)
+  - `CLAUDE.md`, `README.md` (documentation)
+- **Files that ALWAYS trigger rebuild**:
+  - `.github/workflows/*` (workflow changes need fresh build)
+  - `.github/patches/*` (patch changes)
+  - Source code files
 - **Output**: `should_build` (true/false)
 
 ### Job 1: `setup-maven`
@@ -328,15 +331,21 @@ Claude-specific branches (`claude/**`) are included to allow experimental builds
 **Feature**: Workflow now automatically detects if full build is needed based on changed files.
 
 **Behavior**:
-- Changes to `.github/patches/*`, source code → **Full build** (~15 min)
-- Changes to `.github/workflows/*`, `.github/tests/*`, docs → **Skip build, reuse artifacts** (~2-3 min)
+- Changes to source code, `.github/patches/*`, `.github/workflows/*` → **Full build** (~15 min)
+- Changes to `.github/tests/*`, docs only → **Skip build, reuse artifacts** (~2-3 min)
 - Manual triggers with `skip_build=true` → Always skip build
 - Manual triggers without `skip_build` → Always build
 
 **Benefits**:
 - Faster feedback when fixing tests or updating documentation
-- Saves ~12-13 minutes when only test/workflow changes are made
+- Saves ~12-13 minutes when only test script changes are made
 - Automatically downloads artifacts from latest successful run
+- Workflow changes always trigger full rebuild to ensure integrity
+
+**Pattern Fix (2025-11-06)**:
+- Initial implementation incorrectly included workflow files in "test-only" pattern
+- This caused workflow changes to skip build, creating chicken-and-egg problem
+- Fixed: workflow changes now properly trigger full rebuild
 
 ## Claude Code Instructions
 
@@ -349,3 +358,4 @@ Claude-specific branches (`claude/**`) are included to allow experimental builds
   3. создаешь патч средствами git
   4. больше никак
 - всегда используй агент после пуша
+- всегда используй агент чтобы мониторить билд

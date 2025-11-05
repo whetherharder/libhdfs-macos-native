@@ -64,15 +64,16 @@ jobs:
           git diff --name-only HEAD^ HEAD > changed_files.txt
           cat changed_files.txt
 
-          # Files that don't require rebuild
-          TEST_ONLY_PATTERN="^(\.github/(workflows|tests|templates/ozone-docker-compose\.yml)|CLAUDE\.md|README\.md)"
+          # Files that don't require rebuild (test scripts, test configs, docs only)
+          # NOTE: workflow changes ALWAYS trigger rebuild
+          TEST_ONLY_PATTERN="^(\.github/(tests/|templates/ozone-docker-compose\.yml)|CLAUDE\.md|README\.md)"
 
           if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt; then
             echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "Source code or patches changed - building"
+            echo "Source code, patches, or workflow changed - building"
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "Only test/docs files changed - skipping build, will use latest artifacts"
+            echo "Only test scripts or docs changed - skipping build, will use latest artifacts"
           fi
 
   # ============================================
