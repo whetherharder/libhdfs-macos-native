@@ -141,15 +141,20 @@ The workflow system is **modular**, using reusable workflows for each stage. The
     - If artifacts found for both architectures → skip build
     - If artifacts missing/expired → force build
 
-- **Files that don't require rebuild**:
+- **Files that ALWAYS trigger rebuild:**
+  - `.github/patches/*` (patch changes)
+  - `.github/workflows/build-libhdfs.yml` (build process changes)
+  - `.github/workflows/setup-maven.yml` (dependency changes)
+  - Source code files
+
+- **Files that check artifacts before rebuild:**
+  - `.github/workflows/check-changes.yml` (decision logic only)
+  - `.github/workflows/smoke-test.yml` (test changes)
+  - `.github/workflows/integration-test.yml` (test changes)
+  - `.github/workflows/orchestrator.yml` (orchestration only)
   - `.github/tests/*` (test scripts)
   - `.github/templates/ozone-docker-compose.yml` (test config)
   - `CLAUDE.md`, `README.md` (documentation)
-
-- **Files that ALWAYS trigger rebuild**:
-  - `.github/workflows/*` (workflow changes)
-  - `.github/patches/*` (patch changes)
-  - Source code files
 
 - **Output**: `should_build` (true/false)
 

@@ -73,15 +73,38 @@ jobs:
           echo "Changed files:"
           cat changed_files.txt
 
-          # Files that don't require rebuild (test scripts, test configs, docs only)
-          # NOTE: workflow changes ALWAYS trigger rebuild
+          # Pattern matching: files that don't require rebuild (test scripts, test configs, docs only)
           TEST_ONLY_PATTERN="^(\.github/(tests/|templates/ozone-docker-compose\.yml)|CLAUDE\.md|README\.md)"
 
-          if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt; then
+          # Workflow categorization:
+          # Build-affecting workflows (ALWAYS require rebuild)
+          BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(build-libhdfs|setup-maven)\.yml"
+
+          # Non-build-affecting workflows (can skip rebuild if artifacts exist)
+          NON_BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(check-changes|smoke-test|integration-test|orchestrator)\.yml"
+
+          # Check if build-affecting workflows changed
+          if grep -E "$BUILD_AFFECTING_WORKFLOWS" changed_files.txt; then
             echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "✅ Priority 3: Source code, patches, or workflow changed - building"
+            echo "✅ Priority 3: Build-affecting workflow changed (build-libhdfs.yml or setup-maven.yml) - building"
             exit 0
           fi
+
+          # Check if patches changed
+          if grep "^\.github/patches/" changed_files.txt; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Priority 3: Patches changed - building"
+            exit 0
+          fi
+
+          # Check if non-test, non-doc, non-workflow files changed (source code, etc.)
+          if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt | grep -vE "$NON_BUILD_AFFECTING_WORKFLOWS" | grep -q .; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Priority 3: Source code or other files changed - building"
+            exit 0
+          fi
+
+          # Only test/docs/non-build-affecting workflows changed → check artifacts
 
           # Priority 4: Only test/docs changed - check if artifacts exist
           echo "=== Priority 4: Only test/docs changed - checking artifacts ==="
