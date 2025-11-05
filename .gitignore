@@ -49,3 +49,4 @@ report.html
 auth-keys.xml
 *.pem
 *.key
+.test-patches/

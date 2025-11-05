@@ -1,0 +1,25 @@
+--- a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/util/bulk_crc32_aarch64.c
++++ b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/util/bulk_crc32_aarch64.c
+@@ -342,6 +342,17 @@ typedef void (*crc_pipelined_func_t)(uint32_t *, uint32_t *, uint32_t *, const u
+ extern crc_pipelined_func_t pipelined_crc32c_func;
+ extern crc_pipelined_func_t pipelined_crc32_zlib_func;
+ 
++#ifdef __APPLE__
++/**
++ * On library load, determine what sort of crc we are going to do
++ * and set crc function pointers appropriately.
++ * On macOS ARM64, all Apple Silicon processors support CRC32 instructions.
++ */
++void __attribute__ ((constructor)) init_cpu_support_flag(void) {
++  pipelined_crc32c_func = pipelined_crc32c;
++  pipelined_crc32_zlib_func = pipelined_crc32_zlib;
++}
++#else
+ #include <sys/auxv.h>
+ #include <asm/hwcap.h>
+ 
+@@ -360,3 +371,4 @@ void __attribute__ ((constructor)) init_cpu_support_flag(void) {
+     pipelined_crc32_zlib_func = pipelined_crc32_zlib;
+   }
+ }
++#endif

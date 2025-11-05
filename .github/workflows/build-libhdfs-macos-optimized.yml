@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v19
+          key: hadoop-src-${{ env.HADOOP_VERSION }}-${{ matrix.arch }}-v20
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -304,6 +304,11 @@ jobs:
           ARM64_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-crc32-priority.patch"
           patch --forward -p1 < "$ARM64_PATCH" || echo "⚠️ Patch already applied, skipping"
           echo "✅ ARM64 CRC32 priority patch applied"
+
+          # Apply ARM64 macOS auxv patch (fixes sys/auxv.h not found on macOS)
+          ARM64_AUXV_PATCH="${GITHUB_WORKSPACE}/.github/patches/hadoop-3.3.6-arm64-macos-auxv.patch"
+          patch --forward -p1 < "$ARM64_AUXV_PATCH" || echo "⚠️ Patch already applied, skipping"
+          echo "✅ ARM64 macOS auxv patch applied"
 
           # Fix cmake_minimum_required in ALL HDFS CMakeLists.txt files (including root)
           echo "=== Fixing CMake version in HDFS native client (all CMakeLists.txt) ==="
