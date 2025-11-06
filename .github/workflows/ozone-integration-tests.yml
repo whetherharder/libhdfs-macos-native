@@ -75,6 +75,7 @@ jobs:
       # Install Docker on macOS (if not available)
       # ============================================
       - name: Install Docker via Colima (macOS only)
+        id: install-colima
         if: failure() && runner.os == 'macOS'
         run: |
           echo "=== Installing Docker via Colima ==="
@@ -94,7 +95,7 @@ jobs:
       # Install Docker Compose (if Colima was installed)
       # ============================================
       - name: Install Docker Compose
-        if: failure() && runner.os == 'macOS'
+        if: steps.install-colima.outcome == 'success'
         run: |
           echo "=== Installing Docker Compose ==="
 
@@ -354,6 +355,7 @@ jobs:
       # Install Docker on macOS (if not available)
       # ============================================
       - name: Install Docker via Colima (macOS only)
+        id: install-colima
         if: failure() && runner.os == 'macOS'
         run: |
           echo "=== Installing Docker via Colima ==="
@@ -373,7 +375,7 @@ jobs:
       # Install Docker Compose (if Colima was installed)
       # ============================================
       - name: Install Docker Compose
-        if: failure() && runner.os == 'macOS'
+        if: steps.install-colima.outcome == 'success'
         run: |
           echo "=== Installing Docker Compose ==="
 
