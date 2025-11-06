@@ -95,7 +95,7 @@ jobs:
       # Install Docker Compose (if Colima was installed)
       # ============================================
       - name: Install Docker Compose v2 plugin
-        if: steps.install-colima.outcome == 'success'
+        if: failure() && runner.os == 'macOS'
         run: |
           echo "=== Installing Docker Compose v2 plugin ==="
 
@@ -379,7 +379,7 @@ jobs:
       # Install Docker Compose (if Colima was installed)
       # ============================================
       - name: Install Docker Compose v2 plugin
-        if: steps.install-colima.outcome == 'success'
+        if: failure() && runner.os == 'macOS'
         run: |
           echo "=== Installing Docker Compose v2 plugin ==="
 
