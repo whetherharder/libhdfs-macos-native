@@ -99,12 +99,12 @@ jobs:
         run: |
           echo "=== Installing Docker Compose v2 plugin ==="
 
-          # Install docker compose via Homebrew
-          brew install docker compose
+          # Install docker-compose via Homebrew
+          brew install docker-compose
 
           # Configure as Docker plugin (symlink method)
           mkdir -p ~/.docker/cli-plugins
-          ln -sfn $(brew --prefix)/opt/docker compose/bin/docker compose ~/.docker/cli-plugins/docker compose
+          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
           # Verify installation (v2 syntax)
           docker compose version
@@ -223,13 +223,13 @@ jobs:
           cd ${GITHUB_WORKSPACE}/.github/templates
 
           # Start Ozone in background
-          docker compose -f ozone-docker compose.yml up -d
+          docker compose -f ozone-docker-compose.yml up -d
 
           echo "=== Waiting for Ozone to be healthy ==="
           # Wait for healthcheck to pass (max 60 seconds)
           OZONE_READY=false
           for i in {1..60}; do
-            if docker compose -f ozone-docker compose.yml ps | grep -q "healthy"; then
+            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
               echo "✅ Ozone ready in $i seconds!"
               OZONE_READY=true
               break
@@ -241,12 +241,12 @@ jobs:
           if [ "$OZONE_READY" = false ]; then
             echo "⚠️  Ozone did not become healthy within 60 seconds"
             echo "=== Docker logs ==="
-            docker compose -f ozone-docker compose.yml logs
+            docker compose -f ozone-docker-compose.yml logs
             exit 1
           fi
 
           echo "=== Ozone status ==="
-          docker compose -f ozone-docker compose.yml ps
+          docker compose -f ozone-docker-compose.yml ps
 
       # ============================================
       # Install Python dependencies
@@ -279,8 +279,8 @@ jobs:
         if: always()
         run: |
           cd ${GITHUB_WORKSPACE}/.github/templates
-          docker compose -f ozone-docker compose.yml down -v || true
-          docker compose -f ozone-docker compose.yml rm -f || true
+          docker compose -f ozone-docker-compose.yml down -v || true
+          docker compose -f ozone-docker-compose.yml rm -f || true
 
       # ============================================
       # Integration test summary
@@ -383,12 +383,12 @@ jobs:
         run: |
           echo "=== Installing Docker Compose v2 plugin ==="
 
-          # Install docker compose via Homebrew
-          brew install docker compose
+          # Install docker-compose via Homebrew
+          brew install docker-compose
 
           # Configure as Docker plugin (symlink method)
           mkdir -p ~/.docker/cli-plugins
-          ln -sfn $(brew --prefix)/opt/docker compose/bin/docker compose ~/.docker/cli-plugins/docker compose
+          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
           # Verify installation (v2 syntax)
           docker compose version
@@ -507,13 +507,13 @@ jobs:
           cd ${GITHUB_WORKSPACE}/.github/templates
 
           # Start Ozone in background
-          docker compose -f ozone-docker compose.yml up -d
+          docker compose -f ozone-docker-compose.yml up -d
 
           echo "=== Waiting for Ozone to be healthy ==="
           # Wait for healthcheck to pass (max 60 seconds)
           OZONE_READY=false
           for i in {1..60}; do
-            if docker compose -f ozone-docker compose.yml ps | grep -q "healthy"; then
+            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
               echo "✅ Ozone ready in $i seconds!"
               OZONE_READY=true
               break
@@ -525,12 +525,12 @@ jobs:
           if [ "$OZONE_READY" = false ]; then
             echo "⚠️  Ozone did not become healthy within 60 seconds"
             echo "=== Docker logs ==="
-            docker compose -f ozone-docker compose.yml logs
+            docker compose -f ozone-docker-compose.yml logs
             exit 1
           fi
 
           echo "=== Ozone status ==="
-          docker compose -f ozone-docker compose.yml ps
+          docker compose -f ozone-docker-compose.yml ps
 
       # ============================================
       # Install Python dependencies
@@ -563,8 +563,8 @@ jobs:
         if: always()
         run: |
           cd ${GITHUB_WORKSPACE}/.github/templates
-          docker compose -f ozone-docker compose.yml down -v || true
-          docker compose -f ozone-docker compose.yml rm -f || true
+          docker compose -f ozone-docker-compose.yml down -v || true
+          docker compose -f ozone-docker-compose.yml rm -f || true
 
       # ============================================
       # Integration test summary
