@@ -58,6 +58,8 @@ jobs:
           name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
           path: ~/libhdfs-native
           search_artifacts: true
+          branch: ''
+          workflow_conclusion: success
 
       - name: Verify native libraries load correctly
         run: |
