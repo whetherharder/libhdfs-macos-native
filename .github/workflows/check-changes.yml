@@ -69,7 +69,23 @@ jobs:
 
           # Priority 3: Check changed files
           echo "=== Checking changed files ==="
-          git diff --name-only HEAD^ HEAD > changed_files.txt
+
+          # Try to get changed files, fallback to force build if git history is incomplete
+          if ! git diff --name-only HEAD^ HEAD > changed_files.txt 2>/dev/null; then
+            echo "⚠️  Cannot determine changed files (shallow clone or first commit)"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Forcing build due to incomplete git history"
+            exit 0
+          fi
+
+          # If no files changed (empty diff), force build
+          if [ ! -s changed_files.txt ]; then
+            echo "⚠️  No changed files detected"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "✅ Forcing build due to empty diff"
+            exit 0
+          fi
+
           echo "Changed files:"
           cat changed_files.txt
 
@@ -98,9 +114,12 @@ jobs:
           fi
 
           # Check if non-test, non-doc, non-workflow files changed (source code, etc.)
-          if grep -vE "$TEST_ONLY_PATTERN" changed_files.txt | grep -vE "$NON_BUILD_AFFECTING_WORKFLOWS" | grep -q .; then
+          # Use intermediate variable to avoid pipefail issues
+          OTHER_FILES=$(grep -vE "$TEST_ONLY_PATTERN" changed_files.txt 2>/dev/null | grep -vE "$NON_BUILD_AFFECTING_WORKFLOWS" 2>/dev/null || true)
+          if [ -n "$OTHER_FILES" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
             echo "✅ Priority 3: Source code or other files changed - building"
+            echo "Files triggering build: $OTHER_FILES"
             exit 0
           fi
 
