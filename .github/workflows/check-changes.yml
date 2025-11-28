@@ -138,7 +138,7 @@ jobs:
             --status=success \
             --limit=1 \
             --json databaseId \
-            --jq='.[0].databaseId')
+            --jq='.[0].databaseId' 2>/dev/null || echo "")
 
           if [ -z "$LATEST_RUN" ]; then
             echo "⚠️  No successful runs found - forcing build"
@@ -152,7 +152,7 @@ jobs:
           ARTIFACTS=$(gh run view $LATEST_RUN \
             --repo ${{ github.repository }} \
             --json artifacts \
-            --jq '.artifacts[].name')
+            --jq '.artifacts[].name' 2>/dev/null || echo "")
 
           echo "Available artifacts:"
           echo "$ARTIFACTS"
