@@ -153,6 +153,58 @@ jobs:
           echo "✅ Basic library loading test completed"
 
       # ============================================
+      # Check and install Docker if needed
+      # ============================================
+      - name: Check Docker availability
+        id: check_docker
+        run: |
+          echo "=== Checking Docker availability ==="
+
+          if command -v docker &> /dev/null && docker --version &> /dev/null; then
+            echo "docker_available=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker is available"
+            docker --version
+            docker compose version || echo "Docker Compose not available yet"
+          else
+            echo "docker_available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker is not installed on this runner"
+            echo "Will install Docker via Colima..."
+          fi
+
+      - name: Install Docker via Colima (macOS only)
+        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
+        run: |
+          echo "=== Installing Docker via Colima ==="
+
+          # Install Colima and Docker CLI
+          brew install colima docker
+
+          # Start Colima (lightweight Docker runtime)
+          colima start --cpu 2 --memory 4 --disk 20
+
+          # Verify installation
+          docker --version
+
+          echo "✅ Docker installed and ready"
+
+      - name: Install Docker Compose v2 plugin
+        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
+        run: |
+          echo "=== Installing Docker Compose v2 plugin ==="
+
+          # Install docker-compose via Homebrew
+          brew install docker-compose
+
+          # Configure as Docker plugin (symlink method)
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
+
+          # Verify installation (v2 syntax)
+          docker compose version
+
+          echo "✅ Docker Compose v2 plugin installed and configured"
+
+      # ============================================
       # Start Ozone with Docker Compose
       # ============================================
       - name: Start Ozone with Docker Compose
