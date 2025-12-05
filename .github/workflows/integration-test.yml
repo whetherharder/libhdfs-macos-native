@@ -125,25 +125,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "=== Downloading artifacts from latest successful run with retry ==="
+          echo "=== Downloading artifacts from latest run with retry ==="
 
-          # Find latest successful workflow run
+          # Find latest workflow run WITH ARTIFACTS (not just successful)
+          # Builds may succeed even if integration tests fail
           WORKFLOW_NAME="orchestrator.yml"
-          LATEST_RUN=$(gh run list \
+          HADOOP_VERSION="${{ inputs.hadoop_version }}"
+
+          echo "Looking for recent runs with artifacts..."
+          RECENT_RUNS=$(gh run list \
             --repo ${{ github.repository }} \
             --workflow="$WORKFLOW_NAME" \
-            --status=success \
-            --limit=1 \
+            --limit=5 \
             --json databaseId \
-            --jq='.[0].databaseId')
+            --jq='.[].databaseId')
 
-          if [ -z "$LATEST_RUN" ]; then
-            echo "❌ No successful runs found"
+          if [ -z "$RECENT_RUNS" ]; then
+            echo "❌ No workflow runs found"
             echo "💡 Trigger new workflow run with force_build=true"
             exit 1
           fi
 
-          echo "Found successful run: $LATEST_RUN"
+          # Find first run with our artifact
+          LATEST_RUN=""
+          for RUN_ID in $RECENT_RUNS; do
+            echo "Checking run $RUN_ID for artifacts..."
+            if gh run view $RUN_ID \
+              --repo ${{ github.repository }} \
+              --json artifacts \
+              --jq '.artifacts[].name' 2>/dev/null | grep -q "libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}"; then
+              echo "✅ Found run $RUN_ID with artifact"
+              LATEST_RUN="$RUN_ID"
+              break
+            fi
+          done
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "❌ No runs with artifacts found"
+            echo "💡 Trigger new workflow run with force_build=true"
+            exit 1
+          fi
+
+          echo "Using artifacts from run: $LATEST_RUN"
 
           # Download artifact with retry (3 attempts, 300s timeout each)
           mkdir -p ~/libhdfs-artifacts/native
