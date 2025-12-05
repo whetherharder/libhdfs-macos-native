@@ -52,15 +52,54 @@ jobs:
 
       - name: Download libhdfs artifacts (from latest run with artifacts)
         if: inputs.should_build == 'false'
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: orchestrator.yml
-          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-native
-          search_artifacts: true
-          branch: ''
-          # Don't require successful workflow - builds may succeed even if tests fail
-          workflow_conclusion: ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== Downloading artifacts from latest run ==="
+
+          WORKFLOW_NAME="orchestrator.yml"
+          HADOOP_VERSION="${{ inputs.hadoop_version }}"
+          ARTIFACT_NAME="libhdfs-${HADOOP_VERSION}-macos-${{ matrix.arch }}"
+
+          # Get last 5 runs and find one with our artifact
+          RECENT_RUNS=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow="$WORKFLOW_NAME" \
+            --limit=5 \
+            --json databaseId \
+            --jq='.[].databaseId')
+
+          if [ -z "$RECENT_RUNS" ]; then
+            echo "❌ No workflow runs found"
+            exit 1
+          fi
+
+          LATEST_RUN=""
+          for RUN_ID in $RECENT_RUNS; do
+            echo "Checking run $RUN_ID..."
+            if gh run view $RUN_ID \
+              --repo ${{ github.repository }} \
+              --json artifacts \
+              --jq '.artifacts[].name' 2>/dev/null | grep -q "$ARTIFACT_NAME"; then
+              echo "✅ Found artifact in run $RUN_ID"
+              LATEST_RUN="$RUN_ID"
+              break
+            fi
+          done
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "❌ No runs with artifact $ARTIFACT_NAME found"
+            exit 1
+          fi
+
+          mkdir -p ~/libhdfs-native
+          gh run download $LATEST_RUN \
+            --repo ${{ github.repository }} \
+            --name "$ARTIFACT_NAME" \
+            --dir ~/libhdfs-native
+
+          echo "✅ Downloaded artifacts from run $LATEST_RUN"
+          ls -la ~/libhdfs-native/
 
       - name: Verify native libraries load correctly
         run: |
