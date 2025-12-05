@@ -44,6 +44,71 @@ jobs:
           architecture: x64
 
       # ============================================
+      # Check and install Docker FIRST (before any heavy operations)
+      # ============================================
+      - name: Check Docker availability
+        id: check_docker
+        run: |
+          echo "=== Checking Docker availability ==="
+
+          if command -v docker &> /dev/null && docker --version &> /dev/null; then
+            echo "docker_available=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker is available"
+            docker --version
+            docker compose version || echo "Docker Compose not available yet"
+          else
+            echo "docker_available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker is not installed on this runner"
+            echo "Will install Docker via Colima..."
+          fi
+
+      - name: Install Docker via Colima (macOS only)
+        id: install_colima
+        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
+        run: |
+          set -x  # Enable debug output
+          echo "=== Installing Docker via Colima ==="
+          echo "Runner: $(uname -m)"
+          echo "Memory before: $(vm_stat | head -5)"
+
+          # Install Colima and Docker CLI
+          echo "Installing Colima and Docker..."
+          brew install colima docker || {
+            echo "❌ brew install failed"
+            exit 1
+          }
+
+          # Start Colima (lightweight Docker runtime)
+          echo "Starting Colima..."
+          colima start --cpu 2 --memory 4 --disk 20 || {
+            echo "❌ colima start failed"
+            colima status || true
+            exit 1
+          }
+
+          # Verify installation
+          docker --version
+
+          echo "✅ Docker installed and ready"
+
+      - name: Install Docker Compose v2 plugin
+        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
+        run: |
+          echo "=== Installing Docker Compose v2 plugin ==="
+
+          # Install docker-compose via Homebrew
+          brew install docker-compose
+
+          # Configure as Docker plugin (symlink method)
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
+
+          # Verify installation (v2 syntax)
+          docker compose version
+
+          echo "✅ Docker Compose v2 plugin installed and configured"
+
+      # ============================================
       # Download artifacts with enhanced logic and retry
       # ============================================
       - name: Download libhdfs artifacts (from current run)
@@ -151,58 +216,6 @@ jobs:
           python3 .github/tests/test_library_loading.py
 
           echo "✅ Basic library loading test completed"
-
-      # ============================================
-      # Check and install Docker if needed
-      # ============================================
-      - name: Check Docker availability
-        id: check_docker
-        run: |
-          echo "=== Checking Docker availability ==="
-
-          if command -v docker &> /dev/null && docker --version &> /dev/null; then
-            echo "docker_available=true" >> $GITHUB_OUTPUT
-            echo "✅ Docker is available"
-            docker --version
-            docker compose version || echo "Docker Compose not available yet"
-          else
-            echo "docker_available=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Docker is not installed on this runner"
-            echo "Will install Docker via Colima..."
-          fi
-
-      - name: Install Docker via Colima (macOS only)
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          echo "=== Installing Docker via Colima ==="
-
-          # Install Colima and Docker CLI
-          brew install colima docker
-
-          # Start Colima (lightweight Docker runtime)
-          colima start --cpu 2 --memory 4 --disk 20
-
-          # Verify installation
-          docker --version
-
-          echo "✅ Docker installed and ready"
-
-      - name: Install Docker Compose v2 plugin
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          echo "=== Installing Docker Compose v2 plugin ==="
-
-          # Install docker-compose via Homebrew
-          brew install docker-compose
-
-          # Configure as Docker plugin (symlink method)
-          mkdir -p ~/.docker/cli-plugins
-          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
-
-          # Verify installation (v2 syntax)
-          docker compose version
-
-          echo "✅ Docker Compose v2 plugin installed and configured"
 
       # ============================================
       # Start Ozone with Docker Compose
