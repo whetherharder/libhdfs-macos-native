@@ -131,45 +131,53 @@ jobs:
           WORKFLOW_NAME="orchestrator.yml"
           HADOOP_VERSION="${{ inputs.hadoop_version }}"
 
-          # Find latest successful workflow run
-          LATEST_RUN=$(gh run list \
+          # Find latest workflow run WITH ARTIFACTS (not just successful runs)
+          # Builds may succeed even if integration tests fail
+          echo "Looking for recent runs with artifacts..."
+
+          # Get last 5 runs (any status) and check for artifacts
+          RECENT_RUNS=$(gh run list \
             --repo ${{ github.repository }} \
             --workflow="$WORKFLOW_NAME" \
-            --status=success \
-            --limit=1 \
+            --limit=5 \
             --json databaseId \
-            --jq='.[0].databaseId' 2>/dev/null || echo "")
+            --jq='.[].databaseId' 2>/dev/null || echo "")
+
+          if [ -z "$RECENT_RUNS" ]; then
+            echo "⚠️  No workflow runs found - forcing build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check each run for artifacts
+          LATEST_RUN=""
+          ARTIFACTS=""
+          for RUN_ID in $RECENT_RUNS; do
+            echo "Checking run $RUN_ID for artifacts..."
+            RUN_ARTIFACTS=$(gh run view $RUN_ID \
+              --repo ${{ github.repository }} \
+              --json artifacts \
+              --jq '.artifacts[].name' 2>/dev/null || echo "")
+
+            # Check if both artifacts exist
+            if echo "$RUN_ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-intel-x86_64" && \
+               echo "$RUN_ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-apple-silicon-arm64"; then
+              echo "✅ Found run $RUN_ID with both artifacts"
+              LATEST_RUN="$RUN_ID"
+              ARTIFACTS="$RUN_ARTIFACTS"
+              break
+            fi
+          done
 
           if [ -z "$LATEST_RUN" ]; then
-            echo "⚠️  No successful runs found - forcing build"
+            echo "⚠️  No runs with both artifacts found - forcing build"
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Latest successful run: $LATEST_RUN"
-
-          # Check if artifacts exist for both architectures
-          ARTIFACTS=$(gh run view $LATEST_RUN \
-            --repo ${{ github.repository }} \
-            --json artifacts \
-            --jq '.artifacts[].name' 2>/dev/null || echo "")
-
+          echo "Using artifacts from run: $LATEST_RUN"
           echo "Available artifacts:"
           echo "$ARTIFACTS"
-
-          # Check for Intel artifact
-          if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-intel-x86_64"; then
-            echo "⚠️  Intel artifact not found - forcing build"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Check for ARM64 artifact
-          if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-apple-silicon-arm64"; then
-            echo "⚠️  ARM64 artifact not found - forcing build"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
 
           echo "✅ Both artifacts found - skipping build, will reuse artifacts"
           echo "should_build=false" >> $GITHUB_OUTPUT
