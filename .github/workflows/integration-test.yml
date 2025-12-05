@@ -23,9 +23,11 @@ jobs:
           - arch: intel-x86_64
             runner: macos-15-intel
             arch_name: x86_64
+            java_arch: x64
           - arch: apple-silicon-arm64
             runner: macos-15
             arch_name: arm64
+            java_arch: aarch64
 
     steps:
       - name: Checkout repository
@@ -41,7 +43,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          architecture: x64
+          architecture: ${{ matrix.java_arch }}
 
       # ============================================
       # Check and install Docker FIRST (before any heavy operations)
