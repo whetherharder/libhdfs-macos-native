@@ -182,36 +182,31 @@ jobs:
           # Start Ozone in background
           docker compose -f ozone-docker-compose.yml up -d
 
-          echo "=== Waiting for all Ozone services to be healthy ==="
+          echo "=== Waiting for Ozone to be healthy ==="
           OZONE_READY=false
-          for i in $(seq 1 180); do
-            # Check if OM is healthy and DataNode is running
-            OM_HEALTHY=$(docker compose -f ozone-docker-compose.yml ps om --format json 2>/dev/null | grep -c '"healthy"' || true)
-            DN_RUNNING=$(docker compose -f ozone-docker-compose.yml ps datanode --format json 2>/dev/null | grep -c '"running"' || true)
+          for i in $(seq 1 300); do
+            # Check if container health status is healthy
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose -f ozone-docker-compose.yml ps -q ozone 2>/dev/null) 2>/dev/null || echo "unknown")
 
-            if [ "$OM_HEALTHY" -gt 0 ] && [ "$DN_RUNNING" -gt 0 ]; then
+            if [ "$HEALTH" = "healthy" ]; then
               echo "✅ Ozone cluster ready in $i seconds!"
               OZONE_READY=true
               break
             fi
 
-            # Progress every 15 seconds
-            if [ $((i % 15)) -eq 0 ]; then
-              echo "Waiting for Ozone... ($i/180s)"
-              docker compose -f ozone-docker-compose.yml ps 2>/dev/null || true
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "Waiting for Ozone... ($i/300s, health=$HEALTH)"
+              docker compose -f ozone-docker-compose.yml logs --tail=5 2>/dev/null || true
             fi
             sleep 1
           done
 
           if [ "$OZONE_READY" = false ]; then
-            echo "⚠️  Ozone did not become healthy within 180 seconds"
+            echo "⚠️ Ozone did not become healthy within 300 seconds"
             echo "=== Docker logs ==="
             docker compose -f ozone-docker-compose.yml logs
             exit 1
           fi
-
-          echo "=== Ozone status ==="
-          docker compose -f ozone-docker-compose.yml ps
 
       # ============================================
       # Install Python dependencies
