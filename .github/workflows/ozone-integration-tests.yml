@@ -183,20 +183,28 @@ jobs:
           docker compose -f ozone-docker-compose.yml up -d
 
           echo "=== Waiting for Ozone to be healthy ==="
-          # Wait for healthcheck to pass (max 60 seconds)
           OZONE_READY=false
-          for i in {1..60}; do
-            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
-              echo "✅ Ozone ready in $i seconds!"
+          for i in $(seq 1 180); do
+            # Check if container is running
+            CONTAINER_STATUS=$(docker compose -f ozone-docker-compose.yml ps --format json 2>/dev/null | head -1)
+
+            # Check if OM is responding (port 9874)
+            if docker compose -f ozone-docker-compose.yml exec -T ozone-test ozone admin om getServiceRoles 2>/dev/null; then
+              echo "✅ Ozone OM ready in $i seconds!"
               OZONE_READY=true
               break
             fi
-            echo "Waiting... ($i/60)"
+
+            # Progress every 15 seconds
+            if [ $((i % 15)) -eq 0 ]; then
+              echo "Waiting for Ozone services... ($i/180s)"
+              docker compose -f ozone-docker-compose.yml logs --tail=3 2>/dev/null || true
+            fi
             sleep 1
           done
 
           if [ "$OZONE_READY" = false ]; then
-            echo "⚠️  Ozone did not become healthy within 60 seconds"
+            echo "⚠️  Ozone did not become healthy within 180 seconds"
             echo "=== Docker logs ==="
             docker compose -f ozone-docker-compose.yml logs
             exit 1
