@@ -1,35 +1,93 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  ozone:
+  scm:
     image: apache/ozone:1.4.0
-    container_name: ozone-test
-    hostname: ozone
-    ports:
-      - "9862:9862"  # Ozone DataNode
-      - "9878:9878"  # Ozone Manager
-      - "9876:9876"  # Storage Container Manager
-    environment:
-      - OZONE_OPTS=-Dorg.apache.ratis.thirdparty.io.netty.allocator.useCacheForAllThreads=false
+    hostname: scm
     command: >
       bash -c "
-        ozone scm --init 2>/dev/null || true &&
-        ozone scm &
-        sleep 5 &&
-        ozone om --init 2>/dev/null || true &&
-        ozone om &
-        sleep 5 &&
-        ozone datanode
+        if [ ! -f /tmp/scm-initialized ]; then
+          ozone scm --init && touch /tmp/scm-initialized
+        fi
+        ozone scm
       "
+    environment:
+      OZONE-SITE.XML_ozone.om.address: om
+      OZONE-SITE.XML_ozone.om.http-address: om:9874
+      OZONE-SITE.XML_ozone.scm.names: scm
+      OZONE-SITE.XML_ozone.scm.datanode.id: datanode
+      OZONE-SITE.XML_ozone.scm.pipeline.creation.interval: 30s
+      OZONE-SITE.XML_ozone.scm.container.size: 1GB
+      OZONE-SITE.XML_ozone.replication: 1
+      OZONE-SITE.XML_ozone.replication.type: RATIS
+      OZONE-SITE.XML_hdds.scm.safemode.min.datanode: 1
+      OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
+    ports:
+      - "9876:9876"
+    healthcheck:
+      test: ["CMD", "ozone", "admin", "scm", "roles"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+
+  om:
+    image: apache/ozone:1.4.0
+    hostname: om
+    command: >
+      bash -c "
+        # Wait for SCM to be ready
+        echo 'Waiting for SCM...'
+        for i in $$(seq 1 60); do
+          if ozone admin scm roles 2>/dev/null; then
+            echo 'SCM ready!'
+            break
+          fi
+          sleep 2
+        done
+        if [ ! -f /data/metadata/om-initialized ]; then
+          ozone om --init && touch /data/metadata/om-initialized
+        fi
+        ozone om
+      "
+    environment:
+      OZONE-SITE.XML_ozone.om.address: om
+      OZONE-SITE.XML_ozone.om.http-address: om:9874
+      OZONE-SITE.XML_ozone.scm.names: scm
+      OZONE-SITE.XML_ozone.scm.datanode.id: datanode
+      OZONE-SITE.XML_ozone.scm.pipeline.creation.interval: 30s
+      OZONE-SITE.XML_ozone.scm.container.size: 1GB
+      OZONE-SITE.XML_ozone.replication: 1
+      OZONE-SITE.XML_ozone.replication.type: RATIS
+      OZONE-SITE.XML_hdds.scm.safemode.min.datanode: 1
+      OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
+    ports:
+      - "9874:9874"
+      - "9862:9862"
+    depends_on:
+      scm:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "ozone", "admin", "om", "getServiceRoles"]
       interval: 10s
       timeout: 10s
       retries: 18
-      start_period: 60s
-    networks:
-      - ozone-network
+      start_period: 30s
 
-networks:
-  ozone-network:
-    driver: bridge
+  datanode:
+    image: apache/ozone:1.4.0
+    hostname: datanode
+    command: ozone datanode
+    environment:
+      OZONE-SITE.XML_ozone.om.address: om
+      OZONE-SITE.XML_ozone.om.http-address: om:9874
+      OZONE-SITE.XML_ozone.scm.names: scm
+      OZONE-SITE.XML_ozone.scm.pipeline.creation.interval: 30s
+      OZONE-SITE.XML_ozone.scm.container.size: 1GB
+      OZONE-SITE.XML_ozone.replication: 1
+      OZONE-SITE.XML_ozone.replication.type: RATIS
+      OZONE-SITE.XML_hdds.scm.safemode.min.datanode: 1
+      OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
+    depends_on:
+      om:
+        condition: service_healthy

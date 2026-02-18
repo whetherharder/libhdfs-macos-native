@@ -214,23 +214,23 @@ jobs:
           # Start Ozone in background
           docker compose -f ozone-docker-compose.yml up -d
 
-          echo "=== Waiting for Ozone to be healthy ==="
+          echo "=== Waiting for all Ozone services to be healthy ==="
           OZONE_READY=false
           for i in $(seq 1 180); do
-            # Check if container is running
-            CONTAINER_STATUS=$(docker compose -f ozone-docker-compose.yml ps --format json 2>/dev/null | head -1)
+            # Check if OM is healthy and DataNode is running
+            OM_HEALTHY=$(docker compose -f ozone-docker-compose.yml ps om --format json 2>/dev/null | grep -c '"healthy"' || true)
+            DN_RUNNING=$(docker compose -f ozone-docker-compose.yml ps datanode --format json 2>/dev/null | grep -c '"running"' || true)
 
-            # Check if OM is responding (port 9874)
-            if docker compose -f ozone-docker-compose.yml exec -T ozone-test ozone admin om getServiceRoles 2>/dev/null; then
-              echo "✅ Ozone OM ready in $i seconds!"
+            if [ "$OM_HEALTHY" -gt 0 ] && [ "$DN_RUNNING" -gt 0 ]; then
+              echo "✅ Ozone cluster ready in $i seconds!"
               OZONE_READY=true
               break
             fi
 
             # Progress every 15 seconds
             if [ $((i % 15)) -eq 0 ]; then
-              echo "Waiting for Ozone services... ($i/180s)"
-              docker compose -f ozone-docker-compose.yml logs --tail=3 2>/dev/null || true
+              echo "Waiting for Ozone... ($i/180s)"
+              docker compose -f ozone-docker-compose.yml ps 2>/dev/null || true
             fi
             sleep 1
           done
