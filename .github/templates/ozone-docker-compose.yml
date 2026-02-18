@@ -1,26 +1,94 @@
-version: '3.8'
+version: "3.8"
 
 services:
   ozone:
     image: apache/ozone:1.4.0
-    container_name: ozone-test
     hostname: ozone
     ports:
-      - "9862:9862"  # Ozone DataNode
-      - "9878:9878"  # Ozone Manager
-      - "9876:9876"  # Storage Container Manager
+      - "9874:9874"
+      - "9862:9862"
+      - "9876:9876"
     environment:
-      - OZONE_OPTS=-Dorg.apache.ratis.thirdparty.io.netty.allocator.useCacheForAllThreads=false
-    command: ozone
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9878/metrics"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 30s
-    networks:
-      - ozone-network
+      OZONE-SITE.XML_ozone.om.address: ozone
+      OZONE-SITE.XML_ozone.om.http-address: ozone:9874
+      OZONE-SITE.XML_ozone.scm.names: ozone
+      OZONE-SITE.XML_ozone.scm.client.address: ozone
+      OZONE-SITE.XML_ozone.scm.block.client.address: ozone
+      OZONE-SITE.XML_ozone.scm.datanode.address: ozone
+      OZONE-SITE.XML_ozone.scm.datanode.id: ozone
+      OZONE-SITE.XML_ozone.scm.pipeline.creation.interval: 30s
+      OZONE-SITE.XML_ozone.scm.container.size: 1GB
+      OZONE-SITE.XML_ozone.replication: "1"
+      OZONE-SITE.XML_ozone.replication.type: RATIS
+      OZONE-SITE.XML_hdds.scm.safemode.min.datanode: "1"
+      OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
+      OZONE-SITE.XML_hdds.datanode.dir: /data/hdds
+    command: >
+      bash -c "
+        set -e
 
-networks:
-  ozone-network:
-    driver: bridge
+        # Step 1: Initialize and start SCM
+        if [ ! -f /data/scm-initialized ]; then
+          echo 'Initializing SCM...'
+          ozone scm --init
+          touch /data/scm-initialized
+          echo 'SCM initialized'
+        fi
+        echo 'Starting SCM...'
+        ozone scm &
+        SCM_PID=$$!
+
+        # Step 2: Wait for SCM RPC port (9863)
+        echo 'Waiting for SCM port 9863...'
+        for i in $$(seq 1 120); do
+          if nc -z localhost 9863 2>/dev/null; then
+            echo \"SCM ready on port 9863 after $${i}s\"
+            break
+          fi
+          if [ $$i -eq 120 ]; then
+            echo 'SCM failed to start within 120s'
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # Step 3: Initialize and start OM
+        if [ ! -f /data/om-initialized ]; then
+          echo 'Initializing OM...'
+          ozone om --init
+          touch /data/om-initialized
+          echo 'OM initialized'
+        fi
+        echo 'Starting OM...'
+        ozone om &
+        OM_PID=$$!
+
+        # Step 4: Wait for OM RPC port (9862)
+        echo 'Waiting for OM port 9862...'
+        for i in $$(seq 1 120); do
+          if nc -z localhost 9862 2>/dev/null; then
+            echo \"OM ready on port 9862 after $${i}s\"
+            break
+          fi
+          if [ $$i -eq 120 ]; then
+            echo 'OM failed to start within 120s'
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # Step 5: Start DataNode in foreground
+        echo 'Starting DataNode...'
+        ozone datanode
+      "
+    volumes:
+      - ozone-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9862 && nc -z localhost 9863"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  ozone-data:

@@ -11,21 +11,27 @@ on:
         description: 'Whether build ran (true) or artifacts from previous run (false)'
         type: string
         required: true
+      artifact_run_id:
+        description: 'Run ID with valid artifacts (from check-changes)'
+        type: string
+        required: false
+        default: ''
 
 jobs:
   test:
     name: Integration tests (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
 
+    # NOTE: ARM64 integration tests are skipped - Docker doesn't work on
+    # GitHub Actions ARM64 runners (QEMU panics, VZ lacks entitlements).
+    # ARM64 is still validated in smoke tests (no Docker needed).
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: intel-x86_64
             runner: macos-15-intel
             arch_name: x86_64
-          - arch: apple-silicon-arm64
-            runner: macos-15
-            arch_name: arm64
 
     steps:
       - name: Checkout repository
@@ -44,69 +50,32 @@ jobs:
           architecture: x64
 
       # ============================================
-      # Check and install Docker FIRST (before any heavy operations)
+      # Install Docker via Colima
       # ============================================
-      - name: Check Docker availability
-        id: check_docker
+      - name: Install Docker via Colima
         run: |
-          echo "=== Checking Docker availability ==="
+          echo "=== Installing Colima for Docker support ==="
+          brew install colima docker docker-compose qemu
 
-          if command -v docker &> /dev/null && docker --version &> /dev/null; then
-            echo "docker_available=true" >> $GITHUB_OUTPUT
-            echo "✅ Docker is available"
-            docker --version
-            docker compose version || echo "Docker Compose not available yet"
-          else
-            echo "docker_available=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Docker is not installed on this runner"
-            echo "Will install Docker via Colima..."
-          fi
-
-      - name: Install Docker via Colima (macOS only)
-        id: install_colima
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          set -x  # Enable debug output
-          echo "=== Installing Docker via Colima ==="
-          echo "Runner: $(uname -m)"
-          echo "Memory before: $(vm_stat | head -5)"
-
-          # Install Colima and Docker CLI
-          echo "Installing Colima and Docker..."
-          brew install colima docker || {
-            echo "❌ brew install failed"
-            exit 1
-          }
-
-          # Start Colima (lightweight Docker runtime)
-          echo "Starting Colima..."
-          colima start --cpu 2 --memory 4 --disk 20 || {
-            echo "❌ colima start failed"
-            colima status || true
-            exit 1
-          }
-
-          # Verify installation
-          docker --version
-
-          echo "✅ Docker installed and ready"
-
-      - name: Install Docker Compose v2 plugin
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          echo "=== Installing Docker Compose v2 plugin ==="
-
-          # Install docker-compose via Homebrew
-          brew install docker-compose
-
-          # Configure as Docker plugin (symlink method)
+          # Configure Docker Compose as CLI plugin
           mkdir -p ~/.docker/cli-plugins
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
-          # Verify installation (v2 syntax)
-          docker compose version
+          # Start Colima with QEMU (Intel-only, no arch detection needed)
+          colima start --cpu 2 --memory 4 --disk 60 --vm-type=qemu
 
-          echo "✅ Docker Compose v2 plugin installed and configured"
+          # Wait for Docker to be ready
+          for i in {1..30}; do
+            if docker info &>/dev/null; then
+              echo "Docker ready in $i seconds"
+              break
+            fi
+            sleep 1
+          done
+
+          docker --version
+          docker compose version
+          echo "✅ Colima + Docker ready"
 
       # ============================================
       # Download artifacts with enhanced logic and retry
@@ -116,7 +85,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-artifacts/native
+          path: ~/libhdfs-artifacts
 
       - name: Download libhdfs artifacts (from latest successful run)
         if: inputs.should_build == 'false'
@@ -125,34 +94,40 @@ jobs:
         run: |
           echo "=== Downloading artifacts from latest successful run with retry ==="
 
-          # Find latest successful workflow run
-          WORKFLOW_NAME="orchestrator.yml"
-          LATEST_RUN=$(gh run list \
-            --repo ${{ github.repository }} \
-            --workflow="$WORKFLOW_NAME" \
-            --status=success \
-            --limit=1 \
-            --json databaseId \
-            --jq='.[0].databaseId')
+          # Use artifact_run_id from check-changes if available (already validated)
+          if [ -n "${{ inputs.artifact_run_id }}" ]; then
+            LATEST_RUN="${{ inputs.artifact_run_id }}"
+            echo "Using artifact_run_id from check-changes: $LATEST_RUN"
+          else
+            # Fallback: search for latest successful run
+            WORKFLOW_NAME="orchestrator.yml"
+            LATEST_RUN=$(gh run list \
+              --repo ${{ github.repository }} \
+              --workflow="$WORKFLOW_NAME" \
+              --status=success \
+              --limit=1 \
+              --json databaseId \
+              --jq='.[0].databaseId')
 
-          if [ -z "$LATEST_RUN" ]; then
-            echo "❌ No successful runs found"
-            echo "💡 Trigger new workflow run with force_build=true"
-            exit 1
+            if [ -z "$LATEST_RUN" ]; then
+              echo "❌ No successful runs found"
+              echo "💡 Trigger new workflow run with force_build=true"
+              exit 1
+            fi
+
+            echo "Found successful run (fallback search): $LATEST_RUN"
           fi
 
-          echo "Found successful run: $LATEST_RUN"
-
           # Download artifact with retry (3 attempts, 300s timeout each)
-          mkdir -p ~/libhdfs-artifacts/native
+          mkdir -p ~/libhdfs-artifacts
 
           for attempt in 1 2 3; do
             echo "Download attempt $attempt/3..."
 
-            if timeout 300 gh run download $LATEST_RUN \
+            if gh run download $LATEST_RUN \
               --repo ${{ github.repository }} \
               --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
-              --dir ~/libhdfs-artifacts/native 2>&1; then
+              --dir ~/libhdfs-artifacts 2>&1; then
 
               echo "✅ Download successful"
 
@@ -204,14 +179,24 @@ jobs:
           echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
 
       # ============================================
+      # Install compression libraries
+      # ============================================
+      - name: Install compression libraries
+        run: |
+          echo "=== Installing compression libraries ==="
+          brew install snappy lz4 zstd zlib
+          echo "✅ Compression libraries installed"
+
+      # ============================================
       # Basic library loading test
       # ============================================
       - name: Basic libhdfs test (library loading only)
         run: |
           echo "=== Basic library loading test ==="
 
+          BREW_PREFIX=$(brew --prefix)
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=~/libhdfs-artifacts/native:$JAVA_HOME/lib/server
+          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server:$BREW_PREFIX/lib
 
           python3 .github/tests/test_library_loading.py
 
@@ -230,27 +215,30 @@ jobs:
           docker compose -f ozone-docker-compose.yml up -d
 
           echo "=== Waiting for Ozone to be healthy ==="
-          # Wait for healthcheck to pass (max 60 seconds)
           OZONE_READY=false
-          for i in {1..60}; do
-            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
-              echo "✅ Ozone ready in $i seconds!"
+          for i in $(seq 1 300); do
+            # Check if container health status is healthy
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose -f ozone-docker-compose.yml ps -q ozone 2>/dev/null) 2>/dev/null || echo "unknown")
+
+            if [ "$HEALTH" = "healthy" ]; then
+              echo "✅ Ozone cluster ready in $i seconds!"
               OZONE_READY=true
               break
             fi
-            echo "Waiting... ($i/60)"
+
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "Waiting for Ozone... ($i/300s, health=$HEALTH)"
+              docker compose -f ozone-docker-compose.yml logs --tail=5 2>/dev/null || true
+            fi
             sleep 1
           done
 
           if [ "$OZONE_READY" = false ]; then
-            echo "⚠️  Ozone did not become healthy within 60 seconds"
+            echo "⚠️ Ozone did not become healthy within 300 seconds"
             echo "=== Docker logs ==="
             docker compose -f ozone-docker-compose.yml logs
             exit 1
           fi
-
-          echo "=== Ozone status ==="
-          docker compose -f ozone-docker-compose.yml ps
 
       # ============================================
       # Install Python dependencies
@@ -264,9 +252,10 @@ jobs:
       # ============================================
       - name: Run PyArrow integration tests
         run: |
-          export HADOOP_HOME=~/libhdfs-artifacts
+          export HADOOP_HOME=$HOME/libhdfs-artifacts
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
           export DYLD_LIBRARY_PATH=$HADOOP_HOME/native:$JAVA_HOME/lib/server
+          export CLASSPATH=$(find $HADOOP_HOME/jars -name "*.jar" | tr '\n' ':')
           export HDFS_HOST=localhost
           export HDFS_PORT=9862
 
@@ -301,4 +290,5 @@ jobs:
           echo "- File I/O operations" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Architecture:** ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Docker:** Colima" >> $GITHUB_STEP_SUMMARY
           echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY

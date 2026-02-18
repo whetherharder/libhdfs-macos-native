@@ -59,25 +59,38 @@ jobs:
         run: |
           echo "=== Installing build dependencies ==="
           brew install maven cmake autoconf automake libtool
-          brew install openssl@3 snappy zlib lz4 zstd protobuf@21
+          brew install openssl@3 snappy zlib lz4 zstd
 
       # ============================================
-      # STEP 4: Verify Protocol Buffers installation
+      # STEP 4: Build Protocol Buffers from source
       # ============================================
-      - name: Verify Protocol Buffers installation
+      - name: Build protobuf from source
         run: |
-          echo "=== Verifying Protocol Buffers from brew ==="
-          # protobuf@21 is keg-only, need to add to PATH
-          # Use brew --prefix to support both Intel (/usr/local) and ARM64 (/opt/homebrew)
-          PROTOBUF_PREFIX=$(brew --prefix protobuf@21)
-          export PATH="$PROTOBUF_PREFIX/bin:$PATH"
-          protoc --version
-          echo "Protobuf libraries:"
-          ls -la "$PROTOBUF_PREFIX/lib/" | grep libprotobuf
-          echo "✅ Protocol Buffers installed via brew at $PROTOBUF_PREFIX"
+          echo "=== Building Protocol Buffers 21.12 from source ==="
+          echo "protobuf@21 was removed from Homebrew (Jan 2026)"
+          echo "Building from source per official Hadoop BUILDING.txt"
 
-          # Add to PATH for subsequent steps
-          echo "$PROTOBUF_PREFIX/bin" >> $GITHUB_PATH
+          PROTOBUF_VER="21.12"
+          cd /tmp
+          curl -sL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VER}/protobuf-all-${PROTOBUF_VER}.tar.gz" -o protobuf.tar.gz
+          tar xzf protobuf.tar.gz
+          cd "protobuf-${PROTOBUF_VER}"
+
+          cmake -S . -B build \
+            -DCMAKE_INSTALL_PREFIX=$HOME/protobuf \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+          cmake --install build
+
+          echo "$HOME/protobuf/bin" >> $GITHUB_PATH
+
+          # Verify
+          $HOME/protobuf/bin/protoc --version
+          echo "Protobuf libraries:"
+          ls -la "$HOME/protobuf/lib/" | grep libprotobuf || ls -la "$HOME/protobuf/lib64/" | grep libprotobuf || true
+          echo "✅ Protocol Buffers ${PROTOBUF_VER} built and installed at $HOME/protobuf"
 
       # ============================================
       # STEP 5: Setup OpenSSL
@@ -138,7 +151,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/hadoop-src
-          key: hadoop-src-${{ inputs.hadoop_version }}-${{ matrix.arch }}-v20
+          key: hadoop-src-${{ inputs.hadoop_version }}-${{ matrix.arch }}-v21
 
       # ============================================
       # STEP 8: Clone Hadoop source (for native code only)
@@ -272,7 +285,7 @@ jobs:
           # Get Homebrew prefixes (supports both Intel and ARM64)
           BREW_PREFIX=$(brew --prefix)
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
-          PROTOBUF_PREFIX=$(brew --prefix protobuf@21)
+          PROTOBUF_PREFIX=$HOME/protobuf
 
           # Compression libraries - use Homebrew for all
           SNAPPY_PREFIX=$(brew --prefix snappy 2>/dev/null || echo "$BREW_PREFIX")
@@ -329,20 +342,25 @@ jobs:
           fi
 
           # Add all compression libraries to PKG_CONFIG_PATH
-          export PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig:$PROTOBUF_PREFIX/lib/pkgconfig:$SNAPPY_PREFIX/lib/pkgconfig:$LZ4_PREFIX/lib/pkgconfig:$ZSTD_PREFIX/lib/pkgconfig
+          # Protobuf might install to lib or lib64 depending on platform
+          PROTOBUF_LIB_DIR=$PROTOBUF_PREFIX/lib
+          if [ -d "$PROTOBUF_PREFIX/lib64" ] && [ ! -d "$PROTOBUF_PREFIX/lib/pkgconfig" ]; then
+            PROTOBUF_LIB_DIR=$PROTOBUF_PREFIX/lib64
+          fi
+          export PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig:$PROTOBUF_LIB_DIR/pkgconfig:$SNAPPY_PREFIX/lib/pkgconfig:$LZ4_PREFIX/lib/pkgconfig:$ZSTD_PREFIX/lib/pkgconfig
 
-          export PROTOBUF_HOME=$PROTOBUF_PREFIX
           export CMAKE_PREFIX_PATH=$OPENSSL_PREFIX:$PROTOBUF_PREFIX:$SNAPPY_PREFIX:$LZ4_PREFIX:$ZSTD_PREFIX:$ZLIB_PREFIX:$BREW_PREFIX
           export Protobuf_ROOT=$PROTOBUF_PREFIX
+          export PROTOBUF_HOME=$PROTOBUF_PREFIX
 
           # Compiler flags for all keg-only libraries
           if [[ "$ZLIB_PREFIX" == *"/opt/homebrew"* ]] || [[ "$ZLIB_PREFIX" == *"/usr/local"* ]]; then
             # Include Homebrew zlib in flags
-            export LDFLAGS="-L$PROTOBUF_PREFIX/lib -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib -L$ZLIB_PREFIX/lib"
+            export LDFLAGS="-L$PROTOBUF_LIB_DIR -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib -L$ZLIB_PREFIX/lib"
             export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include -I$ZLIB_PREFIX/include"
           else
             # System zlib, don't add to flags (CMake will find it)
-            export LDFLAGS="-L$PROTOBUF_PREFIX/lib -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib"
+            export LDFLAGS="-L$PROTOBUF_LIB_DIR -L$SNAPPY_PREFIX/lib -L$LZ4_PREFIX/lib -L$ZSTD_PREFIX/lib"
             export CPPFLAGS="-I$PROTOBUF_PREFIX/include -I$SNAPPY_PREFIX/include -I$LZ4_PREFIX/include -I$ZSTD_PREFIX/include"
           fi
 
@@ -566,7 +584,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-artifacts/native/
+          path: |
+            ~/libhdfs-artifacts/native/
+            ~/libhdfs-artifacts/headers/
+            ~/libhdfs-artifacts/BUILD_INFO.txt
           retention-days: 90
 
       # ============================================

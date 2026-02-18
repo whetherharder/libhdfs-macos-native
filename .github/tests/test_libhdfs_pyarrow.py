@@ -69,7 +69,7 @@ def create_test_data():
         'id': range(1000),
         'name': [f'user_{i}' for i in range(1000)],
         'value': [i * 1.5 for i in range(1000)],
-        'timestamp': [datetime.now() for _ in range(1000)],
+        'timestamp': [datetime(2024, 1, 1, 12, 0, 0) for _ in range(1000)],
         'is_active': [i % 2 == 0 for i in range(1000)]
     })
 
@@ -78,7 +78,7 @@ def test_compression(hdfs, test_path='/tmp/libhdfs_test', compressions=['snappy'
 
     if not hdfs:
         print("\n⚠️  Skipping compression tests (no HDFS connection)")
-        return
+        return None
 
     print(f"\n=== Testing Compression Algorithms ===")
     df = create_test_data()
@@ -137,7 +137,7 @@ def test_basic_operations(hdfs, test_path='/tmp/libhdfs_test'):
 
     if not hdfs:
         print("\n⚠️  Skipping basic operations tests (no HDFS connection)")
-        return
+        return False
 
     print(f"\n=== Testing Basic HDFS Operations ===")
 
@@ -173,16 +173,20 @@ def test_basic_operations(hdfs, test_path='/tmp/libhdfs_test'):
         files = hdfs.get_file_info(selector)
         print(f"  ✅ Found {len(files)} items")
 
-        # Cleanup
-        print(f"Cleaning up: {test_path}")
-        hdfs.delete_dir(test_path)
-        print(f"  ✅ Directory deleted")
-
         return True
 
     except Exception as e:
         print(f"❌ Basic operations failed: {e}")
         return False
+
+    finally:
+        # Always attempt cleanup
+        try:
+            print(f"Cleaning up: {test_path}")
+            hdfs.delete_dir(test_path)
+            print(f"  ✅ Directory deleted")
+        except Exception:
+            print(f"  ⚠️  Cleanup failed (may not exist)")
 
 def print_library_info():
     """Print information about loaded libraries."""
@@ -229,13 +233,27 @@ def main():
     # Test connection
     hdfs = test_hdfs_connection(host=hdfs_host, port=hdfs_port, user=hdfs_user)
 
-    # Run tests
-    test_basic_operations(hdfs)
-    test_compression(hdfs)
+    # Run tests and track failures
+    failures = 0
+
+    basic_result = test_basic_operations(hdfs)
+    if basic_result is False:
+        failures += 1
+
+    compression_results = test_compression(hdfs)
+    if compression_results is not None:
+        failed_compressions = [k for k, v in compression_results.items() if not v.get('success')]
+        if failed_compressions:
+            failures += 1
 
     print("\n" + "=" * 60)
-    print("✅ Test suite completed")
-    print("=" * 60)
+    if failures > 0:
+        print(f"❌ Test suite completed with {failures} failure(s)")
+        print("=" * 60)
+        sys.exit(1)
+    else:
+        print("✅ Test suite completed successfully")
+        print("=" * 60)
 
 if __name__ == '__main__':
     main()
