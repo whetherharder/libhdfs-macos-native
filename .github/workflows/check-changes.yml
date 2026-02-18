@@ -97,7 +97,7 @@ jobs:
           BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(build-libhdfs|setup-maven)\.yml"
 
           # Non-build-affecting workflows (can skip rebuild if artifacts exist)
-          NON_BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(check-changes|smoke-test|integration-test|orchestrator)\.yml"
+          NON_BUILD_AFFECTING_WORKFLOWS="^\.github/workflows/(check-changes|smoke-test|integration-test|ozone-integration-tests|orchestrator)\.yml"
 
           # Check if build-affecting workflows changed
           if grep -E "$BUILD_AFFECTING_WORKFLOWS" changed_files.txt; then
@@ -149,10 +149,11 @@ jobs:
           echo "Latest successful run: $LATEST_RUN"
 
           # Check if artifacts exist for both architectures
-          ARTIFACTS=$(gh run view $LATEST_RUN \
-            --repo ${{ github.repository }} \
-            --json artifacts \
-            --jq '.artifacts[].name' 2>/dev/null || echo "")
+          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/$LATEST_RUN/artifacts \
+            --jq '.artifacts[].name') || {
+              echo "⚠️  Failed to fetch artifacts from run $LATEST_RUN"
+              ARTIFACTS=""
+            }
 
           echo "Available artifacts:"
           echo "$ARTIFACTS"
