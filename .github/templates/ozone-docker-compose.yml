@@ -11,11 +11,20 @@ services:
       - "9876:9876"  # Storage Container Manager
     environment:
       - OZONE_OPTS=-Dorg.apache.ratis.thirdparty.io.netty.allocator.useCacheForAllThreads=false
-    command: ozone
+    command: >
+      bash -c "
+        ozone scm --init 2>/dev/null || true &&
+        ozone scm &
+        sleep 5 &&
+        ozone om --init 2>/dev/null || true &&
+        ozone om &
+        sleep 5 &&
+        ozone datanode
+      "
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9878/metrics"]
+      test: ["CMD", "ozone", "admin", "om", "getServiceRoles"]
       interval: 5s
-      timeout: 3s
+      timeout: 10s
       retries: 12
       start_period: 30s
     networks:

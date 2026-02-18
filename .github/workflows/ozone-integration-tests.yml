@@ -9,14 +9,12 @@ on:
         required: false
         default: '3.3.6'
       test_architecture:
-        description: 'Architecture to test'
+        description: 'Architecture to test (ARM64 skipped - Docker not supported on GHA ARM64 runners)'
         type: choice
         required: false
-        default: 'both'
+        default: 'intel-x86_64'
         options:
-          - both
           - intel-x86_64
-          - apple-silicon-arm64
 
 jobs:
   # ============================================
@@ -25,9 +23,6 @@ jobs:
   test-intel:
     name: Ozone integration test (intel-x86_64)
     runs-on: macos-15-intel
-    if: |
-      github.event.inputs.test_architecture == 'both' ||
-      github.event.inputs.test_architecture == 'intel-x86_64'
 
     steps:
       - name: Checkout repository
@@ -57,20 +52,8 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
-          # Detect architecture and choose VM type
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
-            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
-            VM_TYPE="vz"
-            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
-          else
-            # Intel: Use QEMU (VZ not available on Intel)
-            VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU"
-          fi
-
-          # Start Colima with enough resources for Ozone
-          colima start --cpu 2 --memory 4 --disk 60 --vm-type=$VM_TYPE
+          # Start Colima with QEMU (Intel-only, no arch detection needed)
+          colima start --cpu 2 --memory 4 --disk 60 --vm-type=qemu
 
           # Wait for Docker to be ready
           for i in {1..30}; do
@@ -279,262 +262,6 @@ jobs:
           echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY
           echo "**Artifacts:** Downloaded from latest successful orchestrator.yml run" >> $GITHUB_STEP_SUMMARY
 
-  # ============================================
-  # Apple Silicon ARM64 architecture
-  # ============================================
-  test-arm64:
-    name: Ozone integration test (apple-silicon-arm64)
-    runs-on: macos-15
-    if: |
-      github.event.inputs.test_architecture == 'both' ||
-      github.event.inputs.test_architecture == 'apple-silicon-arm64'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Setup Java 11
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-          architecture: aarch64
-
-      # ============================================
-      # Install Docker via Colima
-      # ============================================
-      - name: Install Docker via Colima
-        run: |
-          echo "=== Installing Colima for Docker support ==="
-          brew install colima docker docker-compose qemu
-
-          # Configure Docker Compose as CLI plugin
-          mkdir -p ~/.docker/cli-plugins
-          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
-
-          # Detect architecture and choose VM type
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
-            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
-            VM_TYPE="vz"
-            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
-          else
-            # Intel: Use QEMU (VZ not available on Intel)
-            VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU"
-          fi
-
-          # Start Colima with enough resources for Ozone
-          colima start --cpu 2 --memory 4 --disk 60 --vm-type=$VM_TYPE
-
-          # Wait for Docker to be ready
-          for i in {1..30}; do
-            if docker info &>/dev/null; then
-              echo "Docker ready in $i seconds"
-              break
-            fi
-            sleep 1
-          done
-
-          docker --version
-          docker compose version
-          echo "✅ Colima + Docker ready"
-
-      # ============================================
-      # Download pre-built artifacts (ALWAYS)
-      # ============================================
-      - name: Download libhdfs artifacts from latest successful run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "=== Downloading artifacts from latest successful run with retry ==="
-
-          # Find latest successful workflow run
-          WORKFLOW_NAME="orchestrator.yml"
-          LATEST_RUN=$(gh run list \
-            --repo ${{ github.repository }} \
-            --workflow="$WORKFLOW_NAME" \
-            --status=success \
-            --limit=1 \
-            --json databaseId \
-            --jq='.[0].databaseId')
-
-          if [ -z "$LATEST_RUN" ]; then
-            echo "❌ No successful runs found"
-            echo "💡 Please run orchestrator.yml workflow first to build artifacts"
-            exit 1
-          fi
-
-          echo "Found successful run: $LATEST_RUN"
-          echo "Downloading artifacts for: apple-silicon-arm64"
-
-          # Download artifact with retry (3 attempts, 300s timeout each)
-          mkdir -p ~/libhdfs-artifacts
-
-          for attempt in 1 2 3; do
-            echo "Download attempt $attempt/3..."
-
-            if gh run download $LATEST_RUN \
-              --repo ${{ github.repository }} \
-              --name "libhdfs-${{ github.event.inputs.hadoop_version || '3.3.6' }}-macos-apple-silicon-arm64" \
-              --dir ~/libhdfs-artifacts 2>&1; then
-
-              echo "✅ Download successful"
-
-              # Validate artifact (check if libhdfs.dylib exists)
-              if [ -f ~/libhdfs-artifacts/native/libhdfs.dylib ]; then
-                echo "✅ Artifact validated (libhdfs.dylib found)"
-                exit 0
-              else
-                echo "⚠️  Artifact incomplete (libhdfs.dylib missing)"
-                exit 1
-              fi
-            fi
-
-            if [ $attempt -lt 3 ]; then
-              echo "Retry in 10 seconds..."
-              sleep 10
-            fi
-          done
-
-          echo "❌ Artifact download failed after 3 attempts"
-          echo "💡 Possible reasons:"
-          echo "   - Artifact expired (90 day retention)"
-          echo "   - Artifact for wrong Hadoop version"
-          echo "   - Network issues"
-          echo "💡 Solution: Run orchestrator.yml with force_build=true"
-          exit 1
-
-      # ============================================
-      # Download Hadoop JARs for integration tests
-      # ============================================
-      - name: Download Hadoop JARs for integration tests
-        env:
-          HADOOP_VERSION: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
-        run: |
-          echo "=== Downloading Hadoop JARs for integration tests ==="
-
-          mkdir -p ~/libhdfs-artifacts/jars
-          cd ~/libhdfs-artifacts/jars
-
-          # Use pom.xml template from repository
-          cp ${GITHUB_WORKSPACE}/.github/templates/pom-download-jars.xml.template pom.xml
-          # macOS sed requires backup extension argument (use empty string for no backup)
-          sed -i '' "s/{{HADOOP_VERSION}}/${HADOOP_VERSION}/g" pom.xml
-
-          # Download JARs with dependencies
-          mvn dependency:copy-dependencies -DoutputDirectory=. -DincludeScope=runtime
-
-          echo "✅ Hadoop JARs downloaded"
-          echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
-
-      # ============================================
-      # Basic library loading test
-      # ============================================
-      - name: Basic libhdfs test (library loading only)
-        run: |
-          echo "=== Basic library loading test ==="
-
-          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server
-
-          python3 .github/tests/test_library_loading.py
-
-          echo "✅ Basic library loading test completed"
-
-      # ============================================
-      # Start Ozone with Docker Compose
-      # ============================================
-      - name: Start Ozone mini cluster with Docker Compose
-        run: |
-          echo "=== Starting Ozone mini cluster with Docker Compose ==="
-
-          cd ${GITHUB_WORKSPACE}/.github/templates
-
-          # Start Ozone in background
-          docker compose -f ozone-docker-compose.yml up -d
-
-          echo "=== Waiting for Ozone to be healthy ==="
-          # Wait for healthcheck to pass (max 60 seconds)
-          OZONE_READY=false
-          for i in {1..60}; do
-            if docker compose -f ozone-docker-compose.yml ps | grep -q "healthy"; then
-              echo "✅ Ozone ready in $i seconds!"
-              OZONE_READY=true
-              break
-            fi
-            echo "Waiting... ($i/60)"
-            sleep 1
-          done
-
-          if [ "$OZONE_READY" = false ]; then
-            echo "⚠️  Ozone did not become healthy within 60 seconds"
-            echo "=== Docker logs ==="
-            docker compose -f ozone-docker-compose.yml logs
-            exit 1
-          fi
-
-          echo "=== Ozone status ==="
-          docker compose -f ozone-docker-compose.yml ps
-
-      # ============================================
-      # Install Python dependencies
-      # ============================================
-      - name: Install Python dependencies
-        run: |
-          pip3 install pyarrow pandas
-
-      # ============================================
-      # Run PyArrow integration tests
-      # ============================================
-      - name: Run PyArrow integration tests
-        run: |
-          export HADOOP_HOME=$HOME/libhdfs-artifacts
-          export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=$HADOOP_HOME/native:$JAVA_HOME/lib/server
-          export CLASSPATH=$(find $HADOOP_HOME/jars -name "*.jar" | tr '\n' ':')
-          export HDFS_HOST=localhost
-          export HDFS_PORT=9862
-
-          python3 .github/tests/test_libhdfs_pyarrow.py || {
-            echo "❌ PyArrow integration tests failed"
-            echo "Note: Ozone logs are inside the service container (not accessible directly)"
-            exit 1
-          }
-
-      # ============================================
-      # Cleanup Ozone
-      # ============================================
-      - name: Cleanup Ozone
-        if: always()
-        run: |
-          cd ${GITHUB_WORKSPACE}/.github/templates
-          docker compose -f ozone-docker-compose.yml down -v || true
-          docker compose -f ozone-docker-compose.yml rm -f || true
-
-      # ============================================
-      # Integration test summary
-      # ============================================
-      - name: Integration test summary
-        if: success()
-        run: |
-          echo "## ✅ Ozone Integration Tests Passed - apple-silicon-arm64" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Workflow:** Standalone Docker/Ozone tests" >> $GITHUB_STEP_SUMMARY
-          echo "**Architecture:** arm64" >> $GITHUB_STEP_SUMMARY
-          echo "**Hadoop Version:** ${{ github.event.inputs.hadoop_version || '3.3.6' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Tests completed:" >> $GITHUB_STEP_SUMMARY
-          echo "- Basic library loading" >> $GITHUB_STEP_SUMMARY
-          echo "- PyArrow HDFS integration" >> $GITHUB_STEP_SUMMARY
-          echo "- All compression algorithms (snappy, gzip, lz4, zstd)" >> $GITHUB_STEP_SUMMARY
-          echo "- File I/O operations" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Docker:** Colima" >> $GITHUB_STEP_SUMMARY
-          echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY
-          echo "**Artifacts:** Downloaded from latest successful orchestrator.yml run" >> $GITHUB_STEP_SUMMARY
+  # NOTE: ARM64 integration tests removed - Docker doesn't work on GitHub Actions
+  # ARM64 runners (QEMU: Lima Go panic, VZ: missing entitlements).
+  # ARM64 native libraries are validated in smoke tests (no Docker needed).

@@ -22,6 +22,9 @@ jobs:
     name: Integration tests (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
 
+    # NOTE: ARM64 integration tests are skipped - Docker doesn't work on
+    # GitHub Actions ARM64 runners (QEMU panics, VZ lacks entitlements).
+    # ARM64 is still validated in smoke tests (no Docker needed).
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +32,6 @@ jobs:
           - arch: intel-x86_64
             runner: macos-15-intel
             arch_name: x86_64
-          - arch: apple-silicon-arm64
-            runner: macos-15
-            arch_name: arm64
 
     steps:
       - name: Checkout repository
@@ -47,7 +47,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
+          architecture: x64
 
       # ============================================
       # Install Docker via Colima
@@ -61,20 +61,8 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
-          # Detect architecture and choose VM type
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
-            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
-            VM_TYPE="vz"
-            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
-          else
-            # Intel: Use QEMU (VZ not available on Intel)
-            VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU"
-          fi
-
-          # Start Colima with enough resources for Ozone
-          colima start --cpu 2 --memory 4 --disk 60 --vm-type=$VM_TYPE
+          # Start Colima with QEMU (Intel-only, no arch detection needed)
+          colima start --cpu 2 --memory 4 --disk 60 --vm-type=qemu
 
           # Wait for Docker to be ready
           for i in {1..30}; do
