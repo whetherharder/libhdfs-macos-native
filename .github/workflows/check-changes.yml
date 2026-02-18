@@ -131,24 +131,48 @@ jobs:
           WORKFLOW_NAME="orchestrator.yml"
           HADOOP_VERSION="${{ inputs.hadoop_version }}"
 
-          # Find latest successful workflow run
-          LATEST_RUN=$(gh run list \
+          # Search last 10 successful runs for one that has build artifacts
+          # (a successful run may have skipped the build, so we need to check multiple)
+          echo "Searching last 10 successful runs for artifacts..."
+          SUCCESSFUL_RUNS=$(gh run list \
             --repo ${{ github.repository }} \
             --workflow="$WORKFLOW_NAME" \
             --status=success \
-            --limit=1 \
+            --limit=10 \
             --json databaseId \
-            --jq='.[0].databaseId' 2>/dev/null || echo "")
+            --jq='.[].databaseId' 2>/dev/null || echo "")
 
-          if [ -z "$LATEST_RUN" ]; then
+          if [ -z "$SUCCESSFUL_RUNS" ]; then
             echo "⚠️  No successful runs found - forcing build"
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Latest successful run: $LATEST_RUN"
+          LATEST_RUN=""
+          for RUN_ID in $SUCCESSFUL_RUNS; do
+            ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts --jq '.artifacts[].name' 2>/dev/null || echo "")
 
-          # Check if artifacts exist for both architectures
+            INTEL_FOUND=$(echo "$ARTIFACTS" | grep -c "libhdfs-.*-macos-intel" || true)
+            ARM_FOUND=$(echo "$ARTIFACTS" | grep -c "libhdfs-.*-macos-apple" || true)
+
+            if [ "$INTEL_FOUND" -gt 0 ] && [ "$ARM_FOUND" -gt 0 ]; then
+              echo "Found run with both artifacts: $RUN_ID"
+              LATEST_RUN="$RUN_ID"
+              break
+            else
+              echo "Run $RUN_ID: missing artifacts (intel=$INTEL_FOUND, arm=$ARM_FOUND), checking next..."
+            fi
+          done
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "⚠️  No recent successful run with artifacts found - forcing build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Using run with artifacts: $LATEST_RUN"
+
+          # Verify artifacts match the expected Hadoop version
           ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/$LATEST_RUN/artifacts \
             --jq '.artifacts[].name') || {
               echo "⚠️  Failed to fetch artifacts from run $LATEST_RUN"
@@ -158,19 +182,19 @@ jobs:
           echo "Available artifacts:"
           echo "$ARTIFACTS"
 
-          # Check for Intel artifact
+          # Check for Intel artifact with correct version
           if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-intel-x86_64"; then
-            echo "⚠️  Intel artifact not found - forcing build"
+            echo "⚠️  Intel artifact for version ${HADOOP_VERSION} not found - forcing build"
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Check for ARM64 artifact
+          # Check for ARM64 artifact with correct version
           if ! echo "$ARTIFACTS" | grep -q "libhdfs-${HADOOP_VERSION}-macos-apple-silicon-arm64"; then
-            echo "⚠️  ARM64 artifact not found - forcing build"
+            echo "⚠️  ARM64 artifact for version ${HADOOP_VERSION} not found - forcing build"
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "✅ Both artifacts found - skipping build, will reuse artifacts"
+          echo "✅ Both artifacts found in run $LATEST_RUN - skipping build, will reuse artifacts"
           echo "should_build=false" >> $GITHUB_OUTPUT
