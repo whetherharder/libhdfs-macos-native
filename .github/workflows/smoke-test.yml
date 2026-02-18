@@ -121,12 +121,19 @@ jobs:
           echo "Libraries found in: $LIBHDFS_DIR"
           ls -lh "$LIBHDFS_DIR/"
 
+      - name: Install compression libraries
+        run: |
+          echo "=== Installing compression libraries for symbol verification ==="
+          brew install snappy lz4 zstd zlib
+          echo "✅ Compression libraries installed"
+
       - name: Verify native libraries load correctly
         run: |
           echo "=== Smoke test: Native library loading ==="
 
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=$LIBHDFS_DIR:$JAVA_HOME/lib/server
+          BREW_PREFIX=$(brew --prefix)
+          export DYLD_LIBRARY_PATH=$LIBHDFS_DIR:$JAVA_HOME/lib/server:$BREW_PREFIX/lib
 
           echo "Libraries:"
           ls -lh "$LIBHDFS_DIR/"

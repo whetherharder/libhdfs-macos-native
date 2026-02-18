@@ -23,22 +23,25 @@ except Exception as e:
     print(f"❌ Failed to load libhadoop.dylib: {e}")
     sys.exit(1)
 
-# Check for compression symbols
+# Check for compression symbols in libhadoop
+# These symbols come from dynamically linked compression libraries
+# (snappy, lz4, zstd, zlib) which must be on DYLD_LIBRARY_PATH
 compression_funcs = ['snappy_compress', 'LZ4_compress_default', 'ZSTD_compress', 'deflate']
 found = 0
+missing = []
 for func in compression_funcs:
     try:
         getattr(libhadoop, func)
         print(f"✅ Found {func} symbol")
         found += 1
     except AttributeError:
-        print(f"  Missing {func} symbol")
+        print(f"  ❌ Missing {func} symbol")
+        missing.append(func)
 
-if found == 0:
-    print(f"\n⚠️  No compression symbols found in libhadoop ({found}/4)")
-    print("   This is expected in smoke tests - compression libs are separate dylibs")
-    print("   Full compression validation happens in integration tests")
-else:
-    print(f"\n✅ {found}/4 compression symbols found in libhadoop")
+if missing:
+    print(f"\n❌ Missing {len(missing)}/4 compression symbols: {', '.join(missing)}")
+    print("   Ensure compression libraries (snappy, lz4, zstd, zlib) are installed")
+    print("   and their paths are included in DYLD_LIBRARY_PATH")
+    sys.exit(1)
 
-print(f"\n✅ Basic library test passed (core libraries loaded successfully)")
+print(f"\n✅ Basic library test passed ({found}/4 compression libraries detected)")
