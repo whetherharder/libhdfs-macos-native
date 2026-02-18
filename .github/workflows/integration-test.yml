@@ -18,6 +18,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: intel-x86_64
@@ -41,72 +42,31 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          architecture: x64
+          architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
 
       # ============================================
-      # Check and install Docker FIRST (before any heavy operations)
+      # Install Docker via OrbStack
       # ============================================
-      - name: Check Docker availability
-        id: check_docker
+      - name: Install Docker via OrbStack
         run: |
-          echo "=== Checking Docker availability ==="
+          echo "=== Installing OrbStack for Docker support ==="
+          brew install --cask orbstack
 
-          if command -v docker &> /dev/null && docker --version &> /dev/null; then
-            echo "docker_available=true" >> $GITHUB_OUTPUT
-            echo "✅ Docker is available"
-            docker --version
-            docker compose version || echo "Docker Compose not available yet"
-          else
-            echo "docker_available=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Docker is not installed on this runner"
-            echo "Will install Docker via Colima..."
-          fi
+          # Start OrbStack (headless/CLI mode)
+          orb start || orb
 
-      - name: Install Docker via Colima (macOS only)
-        id: install_colima
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          set -x  # Enable debug output
-          echo "=== Installing Docker via Colima ==="
-          echo "Runner: $(uname -m)"
-          echo "Memory before: $(vm_stat | head -5)"
+          # Wait for Docker to be ready
+          for i in {1..30}; do
+            if docker info &>/dev/null; then
+              echo "Docker ready in $i seconds"
+              break
+            fi
+            sleep 1
+          done
 
-          # Install Colima and Docker CLI
-          echo "Installing Colima and Docker..."
-          brew install colima docker || {
-            echo "❌ brew install failed"
-            exit 1
-          }
-
-          # Start Colima (lightweight Docker runtime)
-          echo "Starting Colima..."
-          colima start --cpu 2 --memory 4 --disk 20 || {
-            echo "❌ colima start failed"
-            colima status || true
-            exit 1
-          }
-
-          # Verify installation
           docker --version
-
-          echo "✅ Docker installed and ready"
-
-      - name: Install Docker Compose v2 plugin
-        if: steps.check_docker.outputs.docker_available != 'true' && runner.os == 'macOS'
-        run: |
-          echo "=== Installing Docker Compose v2 plugin ==="
-
-          # Install docker-compose via Homebrew
-          brew install docker-compose
-
-          # Configure as Docker plugin (symlink method)
-          mkdir -p ~/.docker/cli-plugins
-          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
-
-          # Verify installation (v2 syntax)
           docker compose version
-
-          echo "✅ Docker Compose v2 plugin installed and configured"
+          echo "✅ OrbStack + Docker ready"
 
       # ============================================
       # Download artifacts with enhanced logic and retry
@@ -116,7 +76,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-artifacts/native
+          path: ~/libhdfs-artifacts
 
       - name: Download libhdfs artifacts (from latest successful run)
         if: inputs.should_build == 'false'
@@ -144,7 +104,7 @@ jobs:
           echo "Found successful run: $LATEST_RUN"
 
           # Download artifact with retry (3 attempts, 300s timeout each)
-          mkdir -p ~/libhdfs-artifacts/native
+          mkdir -p ~/libhdfs-artifacts
 
           for attempt in 1 2 3; do
             echo "Download attempt $attempt/3..."
@@ -152,7 +112,7 @@ jobs:
             if timeout 300 gh run download $LATEST_RUN \
               --repo ${{ github.repository }} \
               --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
-              --dir ~/libhdfs-artifacts/native 2>&1; then
+              --dir ~/libhdfs-artifacts 2>&1; then
 
               echo "✅ Download successful"
 
@@ -211,7 +171,7 @@ jobs:
           echo "=== Basic library loading test ==="
 
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=~/libhdfs-artifacts/native:$JAVA_HOME/lib/server
+          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server
 
           python3 .github/tests/test_library_loading.py
 
@@ -264,9 +224,10 @@ jobs:
       # ============================================
       - name: Run PyArrow integration tests
         run: |
-          export HADOOP_HOME=~/libhdfs-artifacts
+          export HADOOP_HOME=$HOME/libhdfs-artifacts
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
           export DYLD_LIBRARY_PATH=$HADOOP_HOME/native:$JAVA_HOME/lib/server
+          export CLASSPATH=$(find $HADOOP_HOME/jars -name "*.jar" | tr '\n' ':')
           export HDFS_HOST=localhost
           export HDFS_PORT=9862
 
@@ -301,4 +262,5 @@ jobs:
           echo "- File I/O operations" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Architecture:** ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Docker:** OrbStack" >> $GITHUB_STEP_SUMMARY
           echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY

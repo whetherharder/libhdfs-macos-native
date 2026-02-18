@@ -18,6 +18,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: intel-x86_64
@@ -36,7 +37,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          architecture: x64
+          architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,32 +49,91 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-native
+          path: ${{ runner.temp }}/libhdfs-native
 
       - name: Download libhdfs artifacts (from latest successful run)
         if: inputs.should_build == 'false'
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: orchestrator.yml
-          name: libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}
-          path: ~/libhdfs-native
-          search_artifacts: true
-          branch: ''
-          workflow_conclusion: success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== Downloading artifacts from latest successful run ==="
+
+          WORKFLOW_NAME="orchestrator.yml"
+          LATEST_RUN=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow="$WORKFLOW_NAME" \
+            --status=success \
+            --limit=1 \
+            --json databaseId \
+            --jq='.[0].databaseId')
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "❌ No successful runs found"
+            exit 1
+          fi
+
+          echo "Found successful run: $LATEST_RUN"
+
+          mkdir -p $HOME/libhdfs-native
+
+          gh run download $LATEST_RUN \
+            --repo ${{ github.repository }} \
+            --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
+            --dir $HOME/libhdfs-native
+
+          if [ -f $HOME/libhdfs-native/libhdfs.dylib ]; then
+            echo "✅ Artifact validated (libhdfs.dylib found)"
+          else
+            # Check if files are nested in subdirectory
+            find $HOME/libhdfs-native -name "libhdfs.dylib" -type f
+            echo "❌ libhdfs.dylib not found in expected location"
+            exit 1
+          fi
+
+      - name: Prepare artifacts directory
+        run: |
+          # Normalize artifact location: download-artifact@v4 uses runner.temp,
+          # gh run download uses $HOME/libhdfs-native
+          if [ -d "${{ runner.temp }}/libhdfs-native" ]; then
+            ARTIFACT_DIR="${{ runner.temp }}/libhdfs-native"
+          else
+            ARTIFACT_DIR="$HOME/libhdfs-native"
+          fi
+
+          # Find native libraries (may be in native/ subdirectory from artifact upload)
+          if [ -f "$ARTIFACT_DIR/libhdfs.dylib" ]; then
+            export LIBHDFS_DIR="$ARTIFACT_DIR"
+          elif [ -f "$ARTIFACT_DIR/native/libhdfs.dylib" ]; then
+            export LIBHDFS_DIR="$ARTIFACT_DIR/native"
+          else
+            # Search recursively
+            FOUND=$(find "$ARTIFACT_DIR" -name "libhdfs.dylib" -type f | head -1)
+            if [ -n "$FOUND" ]; then
+              export LIBHDFS_DIR=$(dirname "$FOUND")
+            else
+              echo "❌ Cannot find libhdfs.dylib in artifact"
+              find "$ARTIFACT_DIR" -type f
+              exit 1
+            fi
+          fi
+
+          echo "LIBHDFS_DIR=$LIBHDFS_DIR" >> $GITHUB_ENV
+          echo "Libraries found in: $LIBHDFS_DIR"
+          ls -lh "$LIBHDFS_DIR/"
 
       - name: Verify native libraries load correctly
         run: |
           echo "=== Smoke test: Native library loading ==="
 
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=~/libhdfs-native:$JAVA_HOME/lib/server
+          export DYLD_LIBRARY_PATH=$LIBHDFS_DIR:$JAVA_HOME/lib/server
 
           echo "Libraries:"
-          ls -lh ~/libhdfs-native/
+          ls -lh "$LIBHDFS_DIR/"
 
           echo ""
           echo "Architecture check:"
-          file ~/libhdfs-native/libhdfs.dylib
+          file "$LIBHDFS_DIR/libhdfs.dylib"
 
           echo ""
           echo "Testing library loading..."

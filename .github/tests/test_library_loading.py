@@ -31,7 +31,11 @@ for func in compression_funcs:
         getattr(libhadoop, func)
         print(f"✅ Found {func} symbol")
         found += 1
-    except:
-        pass
+    except AttributeError:
+        print(f"  Missing {func} symbol")
+
+if found == 0:
+    print(f"\n❌ No compression libraries detected (0/4)")
+    sys.exit(1)
 
 print(f"\n✅ Basic library test passed ({found}/4 compression libraries detected)")
