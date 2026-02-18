@@ -56,8 +56,19 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
+          # Detect architecture and choose VM type
+          # VZ driver requires nested virtualization, not available on GitHub-hosted ARM64 runners
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            VM_TYPE="qemu"
+            echo "ARM64 detected - using QEMU (VZ requires nested virtualization)"
+          else
+            VM_TYPE="qemu"
+            echo "x86_64 detected - using QEMU for compatibility"
+          fi
+
           # Start Colima with enough resources for Ozone
-          colima start --cpu 2 --memory 4 --disk 60
+          colima start --cpu 2 --memory 4 --disk 60 --vm-type=$VM_TYPE
 
           # Wait for Docker to be ready
           for i in {1..30}; do
@@ -113,7 +124,7 @@ jobs:
           for attempt in 1 2 3; do
             echo "Download attempt $attempt/3..."
 
-            if timeout 300 gh run download $LATEST_RUN \
+            if gh run download $LATEST_RUN \
               --repo ${{ github.repository }} \
               --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
               --dir ~/libhdfs-artifacts 2>&1; then
