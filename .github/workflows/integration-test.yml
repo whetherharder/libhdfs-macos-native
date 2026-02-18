@@ -45,15 +45,19 @@ jobs:
           architecture: ${{ matrix.arch == 'apple-silicon-arm64' && 'aarch64' || 'x64' }}
 
       # ============================================
-      # Install Docker via OrbStack
+      # Install Docker via Colima
       # ============================================
-      - name: Install Docker via OrbStack
+      - name: Install Docker via Colima
         run: |
-          echo "=== Installing OrbStack for Docker support ==="
-          brew install --cask orbstack
+          echo "=== Installing Colima for Docker support ==="
+          brew install colima docker docker-compose
 
-          # Start OrbStack (headless/CLI mode)
-          orb start || orb
+          # Configure Docker Compose as CLI plugin
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
+
+          # Start Colima with enough resources for Ozone
+          colima start --cpu 2 --memory 4 --disk 60
 
           # Wait for Docker to be ready
           for i in {1..30}; do
@@ -66,7 +70,7 @@ jobs:
 
           docker --version
           docker compose version
-          echo "✅ OrbStack + Docker ready"
+          echo "✅ Colima + Docker ready"
 
       # ============================================
       # Download artifacts with enhanced logic and retry
@@ -262,5 +266,5 @@ jobs:
           echo "- File I/O operations" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Architecture:** ${{ matrix.arch_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Docker:** OrbStack" >> $GITHUB_STEP_SUMMARY
+          echo "**Docker:** Colima" >> $GITHUB_STEP_SUMMARY
           echo "**Ozone cluster:** Docker Compose (one per architecture)" >> $GITHUB_STEP_SUMMARY
