@@ -81,12 +81,12 @@ jobs:
             --name "libhdfs-${{ inputs.hadoop_version }}-macos-${{ matrix.arch }}" \
             --dir $HOME/libhdfs-native
 
-          if [ -f $HOME/libhdfs-native/libhdfs.dylib ]; then
-            echo "✅ Artifact validated (libhdfs.dylib found)"
+          FOUND=$(find $HOME/libhdfs-native -name "libhdfs.dylib" -type f | head -1)
+          if [ -n "$FOUND" ]; then
+            echo "✅ Artifact validated (libhdfs.dylib found at: $FOUND)"
           else
-            # Check if files are nested in subdirectory
-            find $HOME/libhdfs-native -name "libhdfs.dylib" -type f
-            echo "❌ libhdfs.dylib not found in expected location"
+            echo "❌ libhdfs.dylib not found anywhere in artifact"
+            find $HOME/libhdfs-native -type f
             exit 1
           fi
 
