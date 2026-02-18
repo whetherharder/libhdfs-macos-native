@@ -12,6 +12,9 @@ services:
       OZONE-SITE.XML_ozone.om.address: ozone
       OZONE-SITE.XML_ozone.om.http-address: ozone:9874
       OZONE-SITE.XML_ozone.scm.names: ozone
+      OZONE-SITE.XML_ozone.scm.client.address: ozone
+      OZONE-SITE.XML_ozone.scm.block.client.address: ozone
+      OZONE-SITE.XML_ozone.scm.datanode.address: ozone
       OZONE-SITE.XML_ozone.scm.datanode.id: ozone
       OZONE-SITE.XML_ozone.scm.pipeline.creation.interval: 30s
       OZONE-SITE.XML_ozone.scm.container.size: 1GB
