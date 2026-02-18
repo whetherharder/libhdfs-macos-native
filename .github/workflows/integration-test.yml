@@ -55,7 +55,7 @@ jobs:
       - name: Install Docker via Colima
         run: |
           echo "=== Installing Colima for Docker support ==="
-          brew install colima docker docker-compose
+          brew install colima docker docker-compose qemu
 
           # Configure Docker Compose as CLI plugin
           mkdir -p ~/.docker/cli-plugins

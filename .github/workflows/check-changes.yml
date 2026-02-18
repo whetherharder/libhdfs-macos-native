@@ -57,10 +57,32 @@ jobs:
             exit 0
           fi
 
-          # Priority 1: skip_build=true → skip build
+          # Priority 1: skip_build=true → skip build, but find artifacts first
           if [ "${{ inputs.skip_build }}" = "true" ]; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
             echo "✅ Priority 1: skip_build=true - skipping build"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+
+            # Search for artifacts to pass to downstream workflows
+            echo "Searching for run with artifacts..."
+            SUCCESSFUL_RUNS=$(gh run list \
+              --repo ${{ github.repository }} \
+              --workflow="orchestrator.yml" \
+              --status=success \
+              --limit=10 \
+              --json databaseId \
+              --jq='.[].databaseId' 2>/dev/null || echo "")
+
+            for RUN_ID in $SUCCESSFUL_RUNS; do
+              ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts --jq '.artifacts[].name' 2>/dev/null || echo "")
+              INTEL_FOUND=$(echo "$ARTIFACTS" | grep -c "libhdfs-.*-macos-intel" || true)
+              ARM_FOUND=$(echo "$ARTIFACTS" | grep -c "libhdfs-.*-macos-apple" || true)
+              if [ "$INTEL_FOUND" -gt 0 ] && [ "$ARM_FOUND" -gt 0 ]; then
+                echo "Found artifacts in run $RUN_ID"
+                echo "artifact_run_id=$RUN_ID" >> $GITHUB_OUTPUT
+                break
+              fi
+            done
+
             exit 0
           fi
 
