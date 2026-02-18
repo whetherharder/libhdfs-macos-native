@@ -11,6 +11,11 @@ on:
         description: 'Whether build ran (true) or artifacts from previous run (false)'
         type: string
         required: true
+      artifact_run_id:
+        description: 'Run ID with valid artifacts (from check-changes)'
+        type: string
+        required: false
+        default: ''
 
 jobs:
   test:
@@ -58,21 +63,28 @@ jobs:
         run: |
           echo "=== Downloading artifacts from latest successful run ==="
 
-          WORKFLOW_NAME="orchestrator.yml"
-          LATEST_RUN=$(gh run list \
-            --repo ${{ github.repository }} \
-            --workflow="$WORKFLOW_NAME" \
-            --status=success \
-            --limit=1 \
-            --json databaseId \
-            --jq='.[0].databaseId')
+          # Use artifact_run_id from check-changes if available (already validated)
+          if [ -n "${{ inputs.artifact_run_id }}" ]; then
+            LATEST_RUN="${{ inputs.artifact_run_id }}"
+            echo "Using artifact_run_id from check-changes: $LATEST_RUN"
+          else
+            # Fallback: search for latest successful run
+            WORKFLOW_NAME="orchestrator.yml"
+            LATEST_RUN=$(gh run list \
+              --repo ${{ github.repository }} \
+              --workflow="$WORKFLOW_NAME" \
+              --status=success \
+              --limit=1 \
+              --json databaseId \
+              --jq='.[0].databaseId')
 
-          if [ -z "$LATEST_RUN" ]; then
-            echo "❌ No successful runs found"
-            exit 1
+            if [ -z "$LATEST_RUN" ]; then
+              echo "❌ No successful runs found"
+              exit 1
+            fi
+
+            echo "Found successful run (fallback search): $LATEST_RUN"
           fi
-
-          echo "Found successful run: $LATEST_RUN"
 
           mkdir -p $HOME/libhdfs-native
 

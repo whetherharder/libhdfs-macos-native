@@ -86,6 +86,7 @@ jobs:
     with:
       hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
       should_build: ${{ needs.check-changes.outputs.should_build }}
+      artifact_run_id: ${{ needs.check-changes.outputs.artifact_run_id || '' }}
 
   # ============================================
   # JOB 5: Integration tests (matrix: Intel + ARM64)
@@ -107,3 +108,4 @@ jobs:
     with:
       hadoop_version: ${{ github.event.inputs.hadoop_version || '3.3.6' }}
       should_build: ${{ needs.check-changes.outputs.should_build }}
+      artifact_run_id: ${{ needs.check-changes.outputs.artifact_run_id || '' }}

@@ -25,6 +25,9 @@ on:
       should_build:
         description: 'Whether build should run (true/false)'
         value: ${{ jobs.check.outputs.should_build }}
+      artifact_run_id:
+        description: 'Run ID containing valid artifacts (when should_build=false)'
+        value: ${{ jobs.check.outputs.artifact_run_id }}
 
 jobs:
   check:
@@ -32,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
+      artifact_run_id: ${{ steps.check.outputs.artifact_run_id }}
 
     steps:
       - name: Checkout repository
@@ -198,3 +202,4 @@ jobs:
 
           echo "✅ Both artifacts found in run $LATEST_RUN - skipping build, will reuse artifacts"
           echo "should_build=false" >> $GITHUB_OUTPUT
+          echo "artifact_run_id=$LATEST_RUN" >> $GITHUB_OUTPUT
