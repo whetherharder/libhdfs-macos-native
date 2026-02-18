@@ -58,14 +58,15 @@ jobs:
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
           # Detect architecture and choose VM type
-          # VZ driver requires nested virtualization, not available on GitHub-hosted ARM64 runners
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then
-            VM_TYPE="qemu"
-            echo "ARM64 detected - using QEMU (VZ requires nested virtualization)"
+            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
+            VM_TYPE="vz"
+            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
           else
+            # Intel: Use QEMU (VZ not available on Intel)
             VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU for compatibility"
+            echo "x86_64 detected - using QEMU"
           fi
 
           # Start Colima with enough resources for Ozone
@@ -317,14 +318,15 @@ jobs:
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
           # Detect architecture and choose VM type
-          # VZ driver requires nested virtualization, not available on GitHub-hosted ARM64 runners
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then
-            VM_TYPE="qemu"
-            echo "ARM64 detected - using QEMU (VZ requires nested virtualization)"
+            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
+            VM_TYPE="vz"
+            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
           else
+            # Intel: Use QEMU (VZ not available on Intel)
             VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU for compatibility"
+            echo "x86_64 detected - using QEMU"
           fi
 
           # Start Colima with enough resources for Ozone

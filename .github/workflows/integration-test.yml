@@ -62,14 +62,15 @@ jobs:
           ln -sfn $(brew --prefix)/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
 
           # Detect architecture and choose VM type
-          # VZ driver requires nested virtualization, not available on GitHub-hosted ARM64 runners
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then
-            VM_TYPE="qemu"
-            echo "ARM64 detected - using QEMU (VZ requires nested virtualization)"
+            # ARM64: Use Apple's Virtualization.framework (native, no nested virt needed)
+            VM_TYPE="vz"
+            echo "ARM64 detected - using VZ (Apple Virtualization.framework)"
           else
+            # Intel: Use QEMU (VZ not available on Intel)
             VM_TYPE="qemu"
-            echo "x86_64 detected - using QEMU for compatibility"
+            echo "x86_64 detected - using QEMU"
           fi
 
           # Start Colima with enough resources for Ozone
@@ -190,14 +191,24 @@ jobs:
           echo "Downloaded $(ls -1 *.jar | wc -l) JAR files"
 
       # ============================================
+      # Install compression libraries
+      # ============================================
+      - name: Install compression libraries
+        run: |
+          echo "=== Installing compression libraries ==="
+          brew install snappy lz4 zstd zlib
+          echo "✅ Compression libraries installed"
+
+      # ============================================
       # Basic library loading test
       # ============================================
       - name: Basic libhdfs test (library loading only)
         run: |
           echo "=== Basic library loading test ==="
 
+          BREW_PREFIX=$(brew --prefix)
           export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server
+          export DYLD_LIBRARY_PATH=$HOME/libhdfs-artifacts/native:$JAVA_HOME/lib/server:$BREW_PREFIX/lib
 
           python3 .github/tests/test_library_loading.py
 
